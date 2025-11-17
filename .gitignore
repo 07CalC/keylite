@@ -1,1 +1,16 @@
 /target
+
+# Test databases
+*db_*/
+benchdb/
+testdb*
+showcase_db/
+test_string_db/
+comparison_db/
+
+# Compiled examples
+examples/example
+examples/example_string
+example
+example_string
+

@@ -1,0 +1,27 @@
+use crate::storage::Memtable;
+use crossbeam_channel::{Receiver, Sender};
+
+pub enum FlushMessage {
+    Flush(Memtable),
+    Shutdown,
+}
+
+pub struct FlushQueue {
+    sender: Sender<FlushMessage>,
+    receiver: Receiver<FlushMessage>,
+}
+
+impl FlushQueue {
+    pub fn new() -> Self {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        Self { sender, receiver }
+    }
+
+    pub fn sender(&self) -> Sender<FlushMessage> {
+        self.sender.clone()
+    }
+
+    pub fn receiver(&self) -> Receiver<FlushMessage> {
+        self.receiver.clone()
+    }
+}

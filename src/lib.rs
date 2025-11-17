@@ -1,3 +1,8 @@
 pub mod db;
-mod index;
-mod segment;
+pub mod error;
+pub mod ffi;
+pub mod sst;
+pub mod storage;
+
+mod compaction;
+mod flush;
