@@ -1,4 +1,4 @@
-use parking_lot::RwLock;
+use arc_swap::ArcSwap;
 use std::fs::read_dir;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
@@ -16,9 +16,9 @@ use super::Result;
 
 pub struct Db {
     dir: PathBuf,
-    memtable: RwLock<Memtable>,
-    immutable_memtables: RwLock<Vec<Memtable>>,
-    sstables: Arc<RwLock<Vec<SSTReader>>>,
+    memtable: Arc<ArcSwap<Memtable>>,
+    immutable_memtables: Arc<ArcSwap<Vec<Arc<Memtable>>>>,
+    sstables: Arc<ArcSwap<Vec<SSTReader>>>,
     next_sst_id: Arc<AtomicU64>,
     flush_sender: Sender<FlushMessage>,
     compaction_sender: Sender<CompactionMessage>,
@@ -59,7 +59,7 @@ impl Db {
             }
         }
 
-        let sstables = Arc::new(RwLock::new(sstables));
+        let sstables = Arc::new(ArcSwap::from_pointee(sstables));
         let next_sst_id = Arc::new(AtomicU64::new(next_id));
 
         let flush_queue = FlushQueue::new();
@@ -91,8 +91,8 @@ impl Db {
 
         Ok(Self {
             dir,
-            memtable: RwLock::new(Memtable::new()),
-            immutable_memtables: RwLock::new(Vec::new()),
+            memtable: Arc::new(ArcSwap::from_pointee(Memtable::new())),
+            immutable_memtables: Arc::new(ArcSwap::from_pointee(Vec::new())),
             sstables,
             next_sst_id,
             flush_sender,
@@ -108,36 +108,43 @@ impl Db {
     // at any time 1 mutable memtable and 2 immutable memtables are allowed, if immutable memtables
     // crosses 2 then the oldest one gets flushed in the SST file
     pub fn put(&self, key: &[u8], val: &[u8]) -> Result<()> {
-        let mut mt = self.memtable.write();
-        mt.put(key.to_vec(), val.to_vec());
+        let memtable = self.memtable.load();
+        memtable.put(key.to_vec(), val.to_vec());
 
-        let should_flush = mt.size_bytes() >= MEMTABLE_SIZE_THRESHOLD;
+        let should_flush = memtable.size_bytes() >= MEMTABLE_SIZE_THRESHOLD;
 
         if should_flush {
-            let old_mt = {
-                let mut new_mt = Memtable::new();
-                std::mem::swap(&mut *mt, &mut new_mt);
-                new_mt
-            };
-            drop(mt);
+            let new_memtable = Arc::new(Memtable::new());
+            let old_memtable = self.memtable.swap(new_memtable);
 
-            if !old_mt.is_empty() {
-                let mut immutable = self.immutable_memtables.write();
-                immutable.push(old_mt);
+            if !old_memtable.is_empty() {
+                loop {
+                    let current = self.immutable_memtables.load();
+                    let mut new_immutables = (**current).clone();
+                    new_immutables.push(old_memtable.clone());
 
-                if immutable.len() > 2 {
-                    let oldest = immutable.remove(0);
-                    let _ = self.flush_sender.send(FlushMessage::Flush(oldest));
+                    let oldest = if new_immutables.len() > 2 {
+                        Some(new_immutables.remove(0))
+                    } else {
+                        None
+                    };
+
+                    let prev = self
+                        .immutable_memtables
+                        .compare_and_swap(&current, Arc::new(new_immutables));
+                    if Arc::ptr_eq(&*prev, &*current) {
+                        if let Some(oldest) = oldest {
+                            let _ = self.flush_sender.send(FlushMessage::Flush(oldest));
+                        }
+                        break;
+                    }
                 }
-                drop(immutable);
             }
 
-            let sst_count = self.sstables.read().len();
+            let sst_count = self.sstables.load().len();
             if sst_count >= MAX_SSTABLES {
                 let _ = self.compaction_sender.send(CompactionMessage::Compact);
             }
-        } else {
-            drop(mt);
         }
 
         Ok(())
@@ -147,29 +154,28 @@ impl Db {
     // then check the 2 immutable memtable
     // if not found then fallback to SSTs
     pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        {
-            let mt = self.memtable.read();
+        //  mutable memtable
+        let memtable = self.memtable.load();
+        if let Some(val) = memtable.get(key) {
+            if val.is_empty() {
+                return None;
+            }
+            return Some(val);
+        }
+
+        //  immutable memtables
+        let immutables = self.immutable_memtables.load();
+        for mt in immutables.iter().rev() {
             if let Some(val) = mt.get(key) {
                 if val.is_empty() {
                     return None;
                 }
-                return Some(val.to_vec());
+                return Some(val);
             }
         }
 
-        {
-            let immutable = self.immutable_memtables.read();
-            for mt in immutable.iter().rev() {
-                if let Some(val) = mt.get(key) {
-                    if val.is_empty() {
-                        return None;
-                    }
-                    return Some(val.to_vec());
-                }
-            }
-        }
-
-        let sstables = self.sstables.read();
+        //  sstables
+        let sstables = self.sstables.load();
         for sst in sstables.iter() {
             match sst.get(key) {
                 Ok(Some(val)) => {
@@ -193,24 +199,18 @@ impl Db {
 
 impl Drop for Db {
     fn drop(&mut self) {
-        let remaining_mt = {
-            let mut mt = self.memtable.write();
-            std::mem::take(&mut *mt)
-        };
+        let remaining_mt = self.memtable.load_full();
 
         if !remaining_mt.is_empty() {
             let _ =
                 flush_memtable_to_disk(&remaining_mt, &self.dir, &self.sstables, &self.next_sst_id);
         }
 
-        let immutable = {
-            let mut immutable = self.immutable_memtables.write();
-            std::mem::take(&mut *immutable)
-        };
+        let immutable = self.immutable_memtables.load_full();
 
-        for mt in immutable {
+        for mt in immutable.iter() {
             if !mt.is_empty() {
-                let _ = flush_memtable_to_disk(&mt, &self.dir, &self.sstables, &self.next_sst_id);
+                let _ = flush_memtable_to_disk(mt, &self.dir, &self.sstables, &self.next_sst_id);
             }
         }
 

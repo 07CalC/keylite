@@ -15,17 +15,22 @@ impl BloomFilter {
     pub fn might_contain(&self, key: &[u8]) -> bool {
         let hash1 = self.hash_key(key, 0);
         let hash2 = self.hash_key(key, 1);
-        let hash3 = self.hash_key(key, 2);
 
-        let bit_index1 = (hash1 % (self.data.len() * 8) as u64) as usize;
-        let bit_index2 = (hash2 % (self.data.len() * 8) as u64) as usize;
-        let bit_index3 = (hash3 % (self.data.len() * 8) as u64) as usize;
+        let bits_len = (self.data.len() * 8) as u64;
 
-        let bit1 = (self.data[bit_index1 / 8] >> (bit_index1 % 8)) & 1;
-        let bit2 = (self.data[bit_index2 / 8] >> (bit_index2 % 8)) & 1;
-        let bit3 = (self.data[bit_index3 / 8] >> (bit_index3 % 8)) & 1;
+        let bit_index1 = (hash1 % bits_len) as usize;
+        let bit_index2 = (hash2 % bits_len) as usize;
+        let bit_index3 = ((hash1.wrapping_add(hash2)) % bits_len) as usize;
 
-        bit1 == 1 && bit2 == 1 && bit3 == 1
+        if (self.data[bit_index1 / 8] >> (bit_index1 % 8)) & 1 == 0 {
+            return false;
+        }
+
+        if (self.data[bit_index2 / 8] >> (bit_index2 % 8)) & 1 == 0 {
+            return false;
+        }
+
+        (self.data[bit_index3 / 8] >> (bit_index3 % 8)) & 1 == 1
     }
 
     fn hash_key(&self, key: &[u8], seed: u32) -> u64 {

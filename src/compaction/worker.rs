@@ -1,5 +1,5 @@
+use arc_swap::ArcSwap;
 use crossbeam_channel::Receiver;
-use parking_lot::RwLock;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::path::Path;
@@ -48,7 +48,7 @@ impl Ord for MergeEntry {
 pub fn compaction_worker(
     receiver: Receiver<CompactionMessage>,
     dir: std::path::PathBuf,
-    sstables: Arc<RwLock<Vec<SSTReader>>>,
+    sstables: Arc<ArcSwap<Vec<SSTReader>>>,
     next_sst_id: Arc<AtomicU64>,
 ) {
     loop {
@@ -65,12 +65,16 @@ pub fn compaction_worker(
 
 fn compact_sstables(
     dir: &Path,
-    sstables: &Arc<RwLock<Vec<SSTReader>>>,
+    sstables: &Arc<ArcSwap<Vec<SSTReader>>>,
     next_sst_id: &Arc<AtomicU64>,
 ) -> Result<()> {
-    let old_sstables = {
-        let mut sstables = sstables.write();
-        std::mem::take(&mut *sstables)
+    // Atomically take all sstables
+    let old_sstables = loop {
+        let current = sstables.load();
+        let prev = sstables.compare_and_swap(&current, Arc::new(Vec::new()));
+        if Arc::ptr_eq(&*prev, &*current) {
+            break (**current).clone();
+        }
     };
 
     if old_sstables.is_empty() {
@@ -104,7 +108,6 @@ fn compact_sstables(
     while let Some(entry) = heap.pop() {
         if let Some(ref lk) = last_key {
             if lk == &entry.key {
-                // Same key, skip (already processed from newer SST)
                 if let Some(Ok((key, value))) = iterators[entry.sst_idx].next() {
                     heap.push(MergeEntry {
                         key,
@@ -142,8 +145,14 @@ fn compact_sstables(
     writer.finish()?;
 
     let reader = SSTReader::open(&sst_path)?;
-    let mut sstables = sstables.write();
-    *sstables = vec![reader];
+
+    loop {
+        let current = sstables.load();
+        let prev = sstables.compare_and_swap(&current, Arc::new(vec![reader.clone()]));
+        if Arc::ptr_eq(&*prev, &*current) {
+            break;
+        }
+    }
 
     for sst in old_sstables {
         let _ = std::fs::remove_file(sst.path());

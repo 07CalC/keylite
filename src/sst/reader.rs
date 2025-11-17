@@ -1,70 +1,20 @@
 use crc32fast::Hasher;
+use dashmap::DashMap;
 use memmap2::Mmap;
-use parking_lot::Mutex;
-use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::{
-    bloom::BloomFilter, BlockIndex, Footer, Result, SSTError, BLOCK_CACHE_SIZE, FOOTER_SIZE, MAGIC,
+    bloom::BloomFilter, BlockIndex, Footer, Result, SSTError, FOOTER_SIZE, MAGIC,
 };
-
-#[derive(Clone)]
-pub(super) struct CachedBlock {
-    pub data: Arc<Vec<u8>>,
-    pub access_count: u64,
-}
-
-pub(super) struct LRUCache {
-    map: HashMap<u64, CachedBlock>,
-    global_counter: u64,
-}
-
-impl LRUCache {
-    fn new() -> Self {
-        Self {
-            map: HashMap::new(),
-            global_counter: 0,
-        }
-    }
-
-    fn get(&mut self, key: &u64) -> Option<CachedBlock> {
-        if let Some(block) = self.map.get_mut(key) {
-            self.global_counter += 1;
-            block.access_count = self.global_counter;
-            Some(block.clone())
-        } else {
-            None
-        }
-    }
-
-    fn insert(&mut self, key: u64, data: Arc<Vec<u8>>) {
-        self.global_counter += 1;
-
-        if self.map.len() >= BLOCK_CACHE_SIZE {
-            if let Some((&lru_key, _)) = self.map.iter().min_by_key(|(_, block)| block.access_count)
-            {
-                self.map.remove(&lru_key);
-            }
-        }
-
-        self.map.insert(
-            key,
-            CachedBlock {
-                data,
-                access_count: self.global_counter,
-            },
-        );
-    }
-}
 
 pub struct SSTReader {
     path: PathBuf,
     pub(super) mmap: Mmap,
-    pub(super) block_indexes: Vec<BlockIndex>,
-    bloom_filter: BloomFilter,
-    pub(super) block_cache: Mutex<LRUCache>,
+    pub(super) block_indexes: Arc<Vec<BlockIndex>>,
+    bloom_filter: Arc<BloomFilter>,
+    pub(super) block_cache: Arc<DashMap<u64, Arc<Vec<u8>>>>,
 }
 
 impl SSTReader {
@@ -91,9 +41,9 @@ impl SSTReader {
         Ok(Self {
             path,
             mmap,
-            block_indexes,
-            bloom_filter,
-            block_cache: Mutex::new(LRUCache::new()),
+            block_indexes: Arc::new(block_indexes),
+            bloom_filter: Arc::new(bloom_filter),
+            block_cache: Arc::new(DashMap::new()),
         })
     }
 
@@ -180,15 +130,10 @@ impl SSTReader {
     }
 
     fn search_block(&self, offset: u64, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        // Try to get from cache first
-        let cached_block = {
-            let mut cache = self.block_cache.lock();
-            cache.get(&offset)
-        };
-
-        let block_data = if let Some(cached) = cached_block {
+        // Try to get from cache first (lock-free!)
+        let block_data = if let Some(cached) = self.block_cache.get(&offset) {
             // Use cached block (already CRC verified)
-            cached.data
+            Arc::clone(cached.value())
         } else {
             // Load and verify block from disk
             let mut pos = offset as usize;
@@ -209,14 +154,14 @@ impl SSTReader {
                 return Err(SSTError::Corrupt);
             }
 
-            // Cache the block with LRU eviction
+            // Cache the block (lock-free insert)
             let block_vec = Arc::new(block_data.to_vec());
-            let mut cache = self.block_cache.lock();
-            cache.insert(offset, block_vec.clone());
+            self.block_cache.insert(offset, Arc::clone(&block_vec));
             block_vec
         };
 
-        // Parse all entries in block first (for binary search)
+        // Search within the block data using binary search
+        // Parse all entries first to build search index
         let mut entries = Vec::new();
         let mut idx = 0;
 
@@ -236,18 +181,21 @@ impl SSTReader {
             }
 
             let entry_key = &block_data[idx..idx + key_len];
+            let entry_key_start = idx;
             idx += key_len;
 
-            let entry_val = &block_data[idx..idx + val_len];
+            let entry_val_start = idx;
             idx += val_len;
 
-            entries.push((entry_key, entry_val));
+            // Store just positions for binary search
+            entries.push((entry_key, entry_key_start, entry_val_start, val_len));
         }
 
         // Binary search on sorted entries
-        match entries.binary_search_by(|(entry_key, _)| entry_key.cmp(&key)) {
+        match entries.binary_search_by(|(entry_key, _, _, _)| entry_key.cmp(&key)) {
             Ok(pos) => {
-                let (_, entry_val) = entries[pos];
+                let (_, _, val_start, val_len) = entries[pos];
+                let entry_val = &block_data[val_start..val_start + val_len];
                 // Empty value means deletion tombstone
                 if entry_val.is_empty() {
                     return Ok(None);
@@ -260,5 +208,29 @@ impl SSTReader {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+impl Clone for SSTReader {
+    fn clone(&self) -> Self {
+        // Re-open the file to get a new Mmap
+        // This is safe since the file is immutable after creation
+        match Self::open(&self.path) {
+            Ok(reader) => reader,
+            Err(_) => {
+                // If we can't open, create a clone that shares Arc fields
+                // and re-mmaps the file
+                let file = File::open(&self.path).expect("Failed to reopen SST file");
+                let mmap = unsafe { Mmap::map(&file).expect("Failed to mmap SST file") };
+                
+                Self {
+                    path: self.path.clone(),
+                    mmap,
+                    block_indexes: Arc::clone(&self.block_indexes),
+                    bloom_filter: Arc::clone(&self.bloom_filter),
+                    block_cache: Arc::clone(&self.block_cache),
+                }
+            }
+        }
     }
 }

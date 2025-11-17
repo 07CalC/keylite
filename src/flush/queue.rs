@@ -1,8 +1,9 @@
 use crate::storage::Memtable;
 use crossbeam_channel::{Receiver, Sender};
+use std::sync::Arc;
 
 pub enum FlushMessage {
-    Flush(Memtable),
+    Flush(Arc<Memtable>),
     Shutdown,
 }
 

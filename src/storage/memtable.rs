@@ -1,40 +1,41 @@
-use std::collections::BTreeMap;
+use dashmap::DashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// loop up heirerchy:
+/// look up heirerchy:
 /// memtable -> immutable memtable -> sst
 pub struct Memtable {
-    data: BTreeMap<Vec<u8>, Vec<u8>>,
-    size_bytes: usize,
+    data: DashMap<Vec<u8>, Vec<u8>>,
+    size_bytes: AtomicUsize,
 }
 
 impl Memtable {
     pub fn new() -> Self {
         Self {
-            data: BTreeMap::new(),
-            size_bytes: 0,
+            data: DashMap::new(),
+            size_bytes: AtomicUsize::new(0),
         }
     }
 
-    pub fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+    pub fn put(&self, key: Vec<u8>, value: Vec<u8>) {
         let key_size = key.len();
         let val_size = value.len();
 
         if let Some(old_val) = self.data.get(&key) {
-            self.size_bytes -= old_val.len();
+            self.size_bytes.fetch_sub(old_val.len(), Ordering::Relaxed);
         } else {
-            self.size_bytes += key_size;
+            self.size_bytes.fetch_add(key_size, Ordering::Relaxed);
         }
-        self.size_bytes += val_size;
+        self.size_bytes.fetch_add(val_size, Ordering::Relaxed);
 
         self.data.insert(key, value);
     }
 
-    pub fn get(&self, key: &[u8]) -> Option<&[u8]> {
-        self.data.get(key).map(|v| v.as_slice())
+    pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.data.get(key).map(|v| v.value().clone())
     }
 
     pub fn size_bytes(&self) -> usize {
-        self.size_bytes
+        self.size_bytes.load(Ordering::Relaxed)
     }
 
     pub fn len(&self) -> usize {
@@ -45,13 +46,15 @@ impl Memtable {
         self.data.is_empty()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
-        self.data.iter().map(|(k, v)| (k.as_slice(), v.as_slice()))
+    pub fn iter(&self) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + use<'_> {
+        self.data
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
     }
 
-    pub fn clear(&mut self) {
+    pub fn clear(&self) {
         self.data.clear();
-        self.size_bytes = 0;
+        self.size_bytes.store(0, Ordering::Relaxed);
     }
 }
 

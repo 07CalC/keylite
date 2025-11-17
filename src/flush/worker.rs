@@ -1,5 +1,5 @@
+use arc_swap::ArcSwap;
 use crossbeam_channel::Receiver;
-use parking_lot::RwLock;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -15,7 +15,7 @@ type Result<T> = std::result::Result<T, DbError>;
 pub fn flush_worker(
     receiver: Receiver<FlushMessage>,
     dir: std::path::PathBuf,
-    sstables: Arc<RwLock<Vec<SSTReader>>>,
+    sstables: Arc<ArcSwap<Vec<SSTReader>>>,
     next_sst_id: Arc<AtomicU64>,
 ) {
     loop {
@@ -33,7 +33,7 @@ pub fn flush_worker(
 pub fn flush_memtable_to_disk(
     memtable: &Memtable,
     dir: &Path,
-    sstables: &Arc<RwLock<Vec<SSTReader>>>,
+    sstables: &Arc<ArcSwap<Vec<SSTReader>>>,
     next_sst_id: &Arc<AtomicU64>,
 ) -> Result<()> {
     if memtable.is_empty() {
@@ -45,13 +45,22 @@ pub fn flush_memtable_to_disk(
 
     let mut writer = SSTWriter::new(&sst_path)?;
     for (key, val) in memtable.iter() {
-        writer.add(key, val)?;
+        writer.add(&key, &val)?;
     }
     writer.finish()?;
 
     let reader = SSTReader::open(&sst_path)?;
-    let mut sstables = sstables.write();
-    sstables.insert(0, reader);
+
+    loop {
+        let current = sstables.load();
+        let mut new_sstables = (**current).clone();
+        new_sstables.insert(0, reader.clone());
+
+        let prev = sstables.compare_and_swap(&current, Arc::new(new_sstables));
+        if Arc::ptr_eq(&*prev, &*current) {
+            break;
+        }
+    }
 
     Ok(())
 }
