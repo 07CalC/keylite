@@ -60,11 +60,11 @@ impl SSTWriter {
     fn add_to_bloom_filter(&mut self, key: &[u8]) {
         let hash1 = self.hash_key(key, 0);
         let hash2 = self.hash_key(key, 1);
-        let hash3 = self.hash_key(key, 2);
 
-        let bit_index1 = (hash1 % (self.bloom_filter.len() * 8) as u64) as usize;
-        let bit_index2 = (hash2 % (self.bloom_filter.len() * 8) as u64) as usize;
-        let bit_index3 = (hash3 % (self.bloom_filter.len() * 8) as u64) as usize;
+        let bits_len = (self.bloom_filter.len() * 8) as u64;
+        let bit_index1 = (hash1 % bits_len) as usize;
+        let bit_index2 = (hash2 % bits_len) as usize;
+        let bit_index3 = ((hash1.wrapping_add(hash2)) % bits_len) as usize;
 
         self.bloom_filter[bit_index1 / 8] |= 1 << (bit_index1 % 8);
         self.bloom_filter[bit_index2 / 8] |= 1 << (bit_index2 % 8);

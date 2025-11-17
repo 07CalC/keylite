@@ -114,13 +114,9 @@ impl SSTReader {
         // Binary search on sparse index to find the block
         // Find the rightmost block whose first_key <= key
         let block_idx = match self.block_indexes.binary_search_by(|idx| {
-            if idx.first_key.as_ref() <= key {
-                std::cmp::Ordering::Less
-            } else {
-                std::cmp::Ordering::Greater
-            }
+            idx.first_key.as_ref().cmp(key)
         }) {
-            Ok(_) => unreachable!(),   // We never return Equal
+            Ok(i) => i,                // Found exact match on a first_key
             Err(0) => return Ok(None), // key is before first block
             Err(i) => i - 1,           // The block to search
         };

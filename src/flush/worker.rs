@@ -43,8 +43,12 @@ pub fn flush_memtable_to_disk(
     let sst_id = next_sst_id.fetch_add(1, Ordering::Relaxed);
     let sst_path = dir.join(format!("sst-{}.db", sst_id));
 
+    // Collect and sort entries before writing
+    let mut entries: Vec<(Vec<u8>, Vec<u8>)> = memtable.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
     let mut writer = SSTWriter::new(&sst_path)?;
-    for (key, val) in memtable.iter() {
+    for (key, val) in entries {
         writer.add(&key, &val)?;
     }
     writer.finish()?;

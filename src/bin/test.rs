@@ -9,8 +9,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Reserve large fixed-size buckets to store individual operation latencies.
-/// Each latency is stored in nanoseconds. Stats are extracted at end.
 const MAX_SAMPLES: usize = 2_000_000;
 
 fn record_latency(buf: &Arc<Vec<AtomicU64>>, index: &AtomicU64, nanos: u64) {
@@ -43,10 +41,8 @@ fn compute_percentiles(buf: &Arc<Vec<AtomicU64>>, count: u64) -> (u64, u64, u64)
 fn main() {
     println!("=== KeyLite Full Concurrency Bench ===\n");
 
-    // Clean DB directory
     let _ = std::fs::remove_dir_all("concurrency_test");
 
-    // Measure DB open latency
     let t_open = Instant::now();
     let db = Arc::new(Db::open("concurrency_test").unwrap());
     let open_time = t_open.elapsed();
@@ -77,7 +73,6 @@ fn main() {
             .collect::<Vec<_>>(),
     );
 
-    // Index counters
     let write_idx = Arc::new(AtomicU64::new(0));
     let read_idx = Arc::new(AtomicU64::new(0));
     let del_idx = Arc::new(AtomicU64::new(0));
@@ -85,7 +80,6 @@ fn main() {
     let start = Instant::now();
     let mut handles = vec![];
 
-    // ---------------- Writers -----------------
     for id in 0..WRITERS {
         let db = Arc::clone(&db);
         let write_count = Arc::clone(&write_count);
@@ -109,7 +103,6 @@ fn main() {
         }));
     }
 
-    // ---------------- Readers -----------------
     for id in 0..READERS {
         let db = Arc::clone(&db);
         let read_count = Arc::clone(&read_count);
@@ -132,7 +125,6 @@ fn main() {
         }));
     }
 
-    // ---------------- Deleters -----------------
     for id in 0..DELETERS {
         let db = Arc::clone(&db);
         let del_count = Arc::clone(&del_count);
@@ -155,12 +147,10 @@ fn main() {
         }));
     }
 
-    // Wait all threads
     for h in handles {
         h.join().unwrap();
     }
 
-    // Final tallies
     let wc = write_count.load(Ordering::Relaxed);
     let rc = read_count.load(Ordering::Relaxed);
     let dc = del_count.load(Ordering::Relaxed);
@@ -185,7 +175,6 @@ fn main() {
         dc as f64 / TEST_DURATION.as_secs_f64()
     );
 
-    // Percentiles
     let (w50, w90, w99) = compute_percentiles(&write_lat, wc);
     let (r50, r90, r99) = compute_percentiles(&read_lat, rc);
     let (d50, d90, d99) = compute_percentiles(&del_lat, dc);
