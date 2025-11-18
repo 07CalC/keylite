@@ -1,4 +1,4 @@
-use keylite::db::Db;
+use keylite_core::db::Db;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::{
     sync::{
@@ -11,6 +11,17 @@ use std::{
 
 const MAX_SAMPLES: usize = 2_000_000;
 
+// ---- MEMORY MEASUREMENT (LINUX ONLY) ----
+fn get_memory_usage_kb() -> u64 {
+    // Reads process RSS (resident set size)
+    let statm = std::fs::read_to_string("/proc/self/statm").unwrap();
+    let parts: Vec<&str> = statm.split_whitespace().collect();
+    let rss_pages: u64 = parts[1].parse().unwrap();
+    let page_size = 4096u64; // most Linux systems: 4 KB/page
+    rss_pages * page_size / 1024
+}
+
+// ---- BENCH UTILITIES ----
 fn record_latency(buf: &Arc<Vec<AtomicU64>>, index: &AtomicU64, nanos: u64) {
     let i = index.fetch_add(1, Ordering::Relaxed);
     if (i as usize) < MAX_SAMPLES {
@@ -38,16 +49,30 @@ fn compute_percentiles(buf: &Arc<Vec<AtomicU64>>, count: u64) -> (u64, u64, u64)
     (p50, p90, p99)
 }
 
+// ---- MAIN BENCH ----
 fn main() {
     println!("=== KeyLite Full Concurrency Bench ===\n");
 
     let _ = std::fs::remove_dir_all("concurrency_test");
 
+    // ---- MEMORY BEFORE OPEN ----
+    let mem_before_open = get_memory_usage_kb();
+    println!("Memory before DB open: {} KB", mem_before_open);
+
+    // ---- OPEN DB ----
     let t_open = Instant::now();
     let db = Arc::new(Db::open("concurrency_test").unwrap());
     let open_time = t_open.elapsed();
-    println!("DB open time: {:?}\n", open_time);
 
+    // ---- MEMORY AFTER OPEN ----
+    let mem_after_open = get_memory_usage_kb();
+    let mem_used_open = mem_after_open - mem_before_open;
+
+    println!("DB open time: {:?}", open_time);
+    println!("Memory after DB open: {} KB", mem_after_open);
+    println!("DB used during open: {} KB\n", mem_used_open);
+
+    // ---- BENCH CONFIG ----
     const WRITERS: usize = 4;
     const READERS: usize = 4;
     const DELETERS: usize = 2;
@@ -77,9 +102,11 @@ fn main() {
     let read_idx = Arc::new(AtomicU64::new(0));
     let del_idx = Arc::new(AtomicU64::new(0));
 
+    // ---- START BENCH ----
     let start = Instant::now();
     let mut handles = vec![];
 
+    // writers
     for id in 0..WRITERS {
         let db = Arc::clone(&db);
         let write_count = Arc::clone(&write_count);
@@ -103,6 +130,7 @@ fn main() {
         }));
     }
 
+    // readers
     for id in 0..READERS {
         let db = Arc::clone(&db);
         let read_count = Arc::clone(&read_count);
@@ -125,6 +153,7 @@ fn main() {
         }));
     }
 
+    // deleters
     for id in 0..DELETERS {
         let db = Arc::clone(&db);
         let del_count = Arc::clone(&del_count);
@@ -147,6 +176,7 @@ fn main() {
         }));
     }
 
+    // wait for threads
     for h in handles {
         h.join().unwrap();
     }
@@ -155,6 +185,11 @@ fn main() {
     let rc = read_count.load(Ordering::Relaxed);
     let dc = del_count.load(Ordering::Relaxed);
 
+    // ---- MEMORY AFTER TEST ----
+    let mem_after_test = get_memory_usage_kb();
+    let mem_used_total = mem_after_test - mem_before_open;
+
+    // ---- RESULTS ----
     println!("\n=== RESULTS ===\n");
 
     println!("DB open latency: {:?}", open_time);
@@ -187,6 +222,12 @@ fn main() {
 
     println!("\n--- Delete Latency (ns) ---");
     println!("p50: {} ns,  p90: {} ns,  p99: {} ns", d50, d90, d99);
+
+    println!("\n--- MEMORY USAGE ---");
+    println!("Memory before DB open:  {} KB", mem_before_open);
+    println!("Memory after DB open:   {} KB", mem_after_open);
+    println!("Memory after benchmark: {} KB", mem_after_test);
+    println!("Total DB memory used:   {} KB", mem_used_total);
 
     println!("\n=== Test Complete ===");
 }

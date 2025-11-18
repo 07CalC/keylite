@@ -10,10 +10,9 @@ pub use iterator::SSTIterator;
 pub use reader::SSTReader;
 pub use writer::SSTWriter;
 
-pub const BLOCK_SIZE: usize = 64 * 1024; // 64KB
+pub const BLOCK_SIZE: usize = 16 * 1024;
 pub const FOOTER_SIZE: usize = 36;
-pub const MAGIC: u64 = 0x5353544142_u64;
-const BLOCK_CACHE_SIZE: usize = 256;
+pub const MAGIC: u64 = 0x4B45594C54_u64;
 
 #[derive(Debug, Error)]
 pub enum SSTError {

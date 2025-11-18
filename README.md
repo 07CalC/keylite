@@ -36,7 +36,48 @@ Keylite uses a modern SSTable (Sorted String Table) architecture:
 
 ## Usage
 
-### Rust
+### Interactive Shell
+
+KeyLite includes an interactive shell similar to SQLite for easy database interaction:
+
+```bash
+# Build the CLI
+cargo build --release --package keylite-cli
+
+# Start interactive shell
+./target/release/keylite-cli --path ./mydb
+```
+
+Example session:
+```
+KeyLite version 0.1.0
+Database: ./mydb
+Opened in 45.23μs
+Type .help for usage hints
+
+keylite> put username Alice
+OK (12.34μs)
+
+keylite> get username
+Alice
+(15.67μs | 1 row)
+
+keylite> del username
+OK (10.23μs)
+
+keylite> .exit
+Goodbye!
+```
+
+Features:
+- Interactive REPL with command history
+- Performance timing for every operation
+- Tab completion and line editing
+- Persistent command history
+
+See [keylite-cli/README.md](keylite-cli/README.md) for full CLI documentation.
+
+### Rust Library
 
 ```rust
 use keylite::db::Db;
