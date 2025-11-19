@@ -11,6 +11,9 @@ extern "C" {
 /* Opaque database handle */
 typedef struct KeyliteDb KeyliteDb;
 
+/* Opaque iterator handle */
+typedef struct KeyliteIterator KeyliteIterator;
+
 /* Result codes */
 typedef enum {
     KEYLITE_OK = 0,
@@ -88,6 +91,47 @@ KeyliteResult keylite_del_str(
     KeyliteDb* db,
     const char* key
 );
+
+/* ============================================================================
+ * Scan API - iterate over key-value pairs
+ * ============================================================================ */
+
+/* Create an iterator for scanning a range of keys
+ * start and end can be NULL to scan from beginning/to end
+ * The iterator must be freed with keylite_iter_free */
+KeyliteResult keylite_scan(
+    KeyliteDb* db,
+    const uint8_t* start,
+    size_t start_len,
+    const uint8_t* end,
+    size_t end_len,
+    KeyliteIterator** iter_out
+);
+
+/* Create an iterator for scanning a range of string keys
+ * start and end can be NULL to scan from beginning/to end
+ * start and end must be null-terminated UTF-8 strings
+ * The iterator must be freed with keylite_iter_free */
+KeyliteResult keylite_scan_str(
+    KeyliteDb* db,
+    const char* start,
+    const char* end,
+    KeyliteIterator** iter_out
+);
+
+/* Get the next key-value pair from the iterator
+ * Returns KEYLITE_OK with key_out=NULL when iteration is complete
+ * Returned key and value must be freed with keylite_free_value */
+KeyliteResult keylite_iter_next(
+    KeyliteIterator* iter,
+    uint8_t** key_out,
+    size_t* key_len_out,
+    uint8_t** val_out,
+    size_t* val_len_out
+);
+
+/* Free an iterator */
+void keylite_iter_free(KeyliteIterator* iter);
 
 #ifdef __cplusplus
 }

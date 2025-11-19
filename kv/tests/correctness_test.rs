@@ -554,3 +554,159 @@ fn test_stress_concurrent_mixed_ops() {
 
     cleanup_test_db("stress_mixed");
 }
+
+#[test]
+fn test_scan_all() {
+    let db = create_test_db("scan_all");
+
+    db.put(b"key3", b"value3").unwrap();
+    db.put(b"key1", b"value1").unwrap();
+    db.put(b"key5", b"value5").unwrap();
+    db.put(b"key2", b"value2").unwrap();
+    db.put(b"key4", b"value4").unwrap();
+
+    let iter = db.scan(None, None);
+    let results: Vec<(Vec<u8>, Vec<u8>)> = iter.collect();
+
+    assert_eq!(results.len(), 5);
+    assert_eq!(results[0], (b"key1".to_vec(), b"value1".to_vec()));
+    assert_eq!(results[1], (b"key2".to_vec(), b"value2".to_vec()));
+    assert_eq!(results[2], (b"key3".to_vec(), b"value3".to_vec()));
+    assert_eq!(results[3], (b"key4".to_vec(), b"value4".to_vec()));
+    assert_eq!(results[4], (b"key5".to_vec(), b"value5".to_vec()));
+
+    drop(db);
+    cleanup_test_db("scan_all");
+}
+
+#[test]
+fn test_scan_range() {
+    let db = create_test_db("scan_range");
+
+    for i in 0..10 {
+        let key = format!("key_{:02}", i);
+        let value = format!("value_{}", i);
+        db.put(key.as_bytes(), value.as_bytes()).unwrap();
+    }
+
+    let iter = db.scan(Some(b"key_03"), Some(b"key_07"));
+    let results: Vec<(Vec<u8>, Vec<u8>)> = iter.collect();
+
+    assert_eq!(results.len(), 4);
+    assert_eq!(results[0], (b"key_03".to_vec(), b"value_3".to_vec()));
+    assert_eq!(results[1], (b"key_04".to_vec(), b"value_4".to_vec()));
+    assert_eq!(results[2], (b"key_05".to_vec(), b"value_5".to_vec()));
+    assert_eq!(results[3], (b"key_06".to_vec(), b"value_6".to_vec()));
+
+    drop(db);
+    cleanup_test_db("scan_range");
+}
+
+#[test]
+fn test_scan_with_start_only() {
+    let db = create_test_db("scan_start");
+
+    for i in 0..10 {
+        let key = format!("key_{:02}", i);
+        let value = format!("value_{}", i);
+        db.put(key.as_bytes(), value.as_bytes()).unwrap();
+    }
+
+    // Scan from key_05 to end
+    let iter = db.scan(Some(b"key_05"), None);
+    let results: Vec<(Vec<u8>, Vec<u8>)> = iter.collect();
+
+    assert_eq!(results.len(), 5);
+    assert_eq!(results[0], (b"key_05".to_vec(), b"value_5".to_vec()));
+    assert_eq!(results[4], (b"key_09".to_vec(), b"value_9".to_vec()));
+
+    drop(db);
+    cleanup_test_db("scan_start");
+}
+
+#[test]
+fn test_scan_with_end_only() {
+    let db = create_test_db("scan_end");
+
+    for i in 0..10 {
+        let key = format!("key_{:02}", i);
+        let value = format!("value_{}", i);
+        db.put(key.as_bytes(), value.as_bytes()).unwrap();
+    }
+
+    let iter = db.scan(None, Some(b"key_05"));
+    let results: Vec<(Vec<u8>, Vec<u8>)> = iter.collect();
+
+    assert_eq!(results.len(), 5);
+    assert_eq!(results[0], (b"key_00".to_vec(), b"value_0".to_vec()));
+    assert_eq!(results[4], (b"key_04".to_vec(), b"value_4".to_vec()));
+
+    drop(db);
+    cleanup_test_db("scan_end");
+}
+
+#[test]
+fn test_scan_skips_tombstones() {
+    let db = create_test_db("scan_tombstones");
+
+    for i in 0..10 {
+        let key = format!("key_{:02}", i);
+        let value = format!("value_{}", i);
+        db.put(key.as_bytes(), value.as_bytes()).unwrap();
+    }
+
+    // Delete every other key
+    for i in (0..10).step_by(2) {
+        let key = format!("key_{:02}", i);
+        db.del(key.as_bytes()).unwrap();
+    }
+
+    // Scan should skip deleted keys
+    let iter = db.scan(None, None);
+    let results: Vec<(Vec<u8>, Vec<u8>)> = iter.collect();
+
+    assert_eq!(results.len(), 5);
+    assert_eq!(results[0], (b"key_01".to_vec(), b"value_1".to_vec()));
+    assert_eq!(results[1], (b"key_03".to_vec(), b"value_3".to_vec()));
+    assert_eq!(results[2], (b"key_05".to_vec(), b"value_5".to_vec()));
+    assert_eq!(results[3], (b"key_07".to_vec(), b"value_7".to_vec()));
+    assert_eq!(results[4], (b"key_09".to_vec(), b"value_9".to_vec()));
+
+    drop(db);
+    cleanup_test_db("scan_tombstones");
+}
+
+#[test]
+fn test_scan_empty_db() {
+    let db = create_test_db("scan_empty");
+
+    let iter = db.scan(None, None);
+    let results: Vec<(Vec<u8>, Vec<u8>)> = iter.collect();
+
+    assert_eq!(results.len(), 0);
+
+    drop(db);
+    cleanup_test_db("scan_empty");
+}
+
+#[test]
+fn test_scan_with_large_dataset() {
+    let db = create_test_db("scan_large");
+
+    for i in 0..1000 {
+        let key = format!("key_{:05}", i);
+        let value = format!("value_{}", i);
+        db.put(key.as_bytes(), value.as_bytes()).unwrap();
+    }
+
+    let iter = db.scan(Some(b"key_00100"), Some(b"key_00200"));
+    let results: Vec<(Vec<u8>, Vec<u8>)> = iter.collect();
+    println!("{:?}", results);
+
+    assert_eq!(results.len(), 100);
+    assert_eq!(results[0], (b"key_00100".to_vec(), b"value_100".to_vec()));
+    assert_eq!(results[99], (b"key_00199".to_vec(), b"value_199".to_vec()));
+
+    drop(db);
+    cleanup_test_db("scan_large");
+}

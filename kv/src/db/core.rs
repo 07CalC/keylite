@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 use crate::compaction::{compaction_worker, CompactionMessage};
+use crate::db::iterator::DbIterator;
 use crate::flush::{flush_memtable_to_disk, flush_worker, FlushMessage, FlushQueue};
 use crate::sst::SSTReader;
 use crate::storage::Memtable;
@@ -49,8 +50,6 @@ impl Db {
         let next_id = sst_ids.last().map(|&id| id + 1).unwrap_or(1);
 
         // open SSTables in reverse order -> newest first for faster lookups
-        // might not need to open all the SSTs at once
-        // TODO: make it more efficient
         let mut sstables = Vec::new();
         for id in sst_ids.iter().rev() {
             let path = dir.join(format!("sst-{}.db", id));
@@ -194,6 +193,20 @@ impl Db {
 
     pub fn del(&self, key: &[u8]) -> Result<()> {
         self.put(key, &[])
+    }
+
+    // performance can be enhanced for empty scans
+    // i.e. i scanned from ff:11 to ff::66 but when ff:11 to ff::66 nothing exists it takes too
+    // much time
+    pub fn scan(&self, start: Option<&[u8]>, end: Option<&[u8]>) -> DbIterator {
+        let memtable = Arc::clone(&self.memtable.load());
+        let immutables = (**self.immutable_memtables.load()).clone();
+        let sstables = (**self.sstables.load()).clone();
+
+        let start_bound = start.map(|s| s.to_vec());
+        let end_bound = end.map(|e| e.to_vec());
+
+        DbIterator::new(memtable, immutables, sstables, start_bound, end_bound)
     }
 }
 
