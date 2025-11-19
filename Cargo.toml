@@ -1,3 +1,3 @@
 [workspace]
-members = ["keylite", "cli"]
+members = ["kv", "kv-cli"]
 resolver = "2"

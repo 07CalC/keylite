@@ -143,17 +143,6 @@ pub unsafe extern "C" fn keylite_del(
     }
 }
 
-// ============================================================================
-// String-specific API (automatically handles UTF-8 encoding/decoding)
-// Flush and compaction are handled automatically by the database
-// ============================================================================
-
-/// Put a string key-value pair into the database
-///
-/// # Safety
-/// - `db` must be a valid pointer returned from `keylite_open`
-/// - `key` must be a valid null-terminated C string (UTF-8)
-/// - `val` must be a valid null-terminated C string (UTF-8)
 #[no_mangle]
 pub unsafe extern "C" fn keylite_put_str(
     db: *mut KeyliteDb,

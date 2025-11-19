@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use keylite_core::db::Db;
+use keylite_kv::db::Db;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::time::Instant;

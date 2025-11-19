@@ -34,7 +34,6 @@ impl SSTIterator {
         self.current_block_data = self.reader.mmap[pos..pos + block_len].to_vec();
         pos += block_len;
 
-        // Verify CRC
         let crc = u32::from_le_bytes(self.reader.mmap[pos..pos + 4].try_into().unwrap());
         let mut hasher = Hasher::new();
         hasher.update(&self.current_block_data);

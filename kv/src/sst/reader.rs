@@ -5,9 +5,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::{
-    bloom::BloomFilter, BlockIndex, Footer, Result, SSTError, FOOTER_SIZE, MAGIC,
-};
+use super::{bloom::BloomFilter, BlockIndex, Footer, Result, SSTError, FOOTER_SIZE, MAGIC};
 
 pub struct SSTReader {
     path: PathBuf,
@@ -111,14 +109,13 @@ impl SSTReader {
             return Ok(None);
         }
 
-        // Binary search on sparse index to find the block
-        // Find the rightmost block whose first_key <= key
-        let block_idx = match self.block_indexes.binary_search_by(|idx| {
-            idx.first_key.as_ref().cmp(key)
-        }) {
-            Ok(i) => i,                // Found exact match on a first_key
-            Err(0) => return Ok(None), // key is before first block
-            Err(i) => i - 1,           // The block to search
+        let block_idx = match self
+            .block_indexes
+            .binary_search_by(|idx| idx.first_key.as_ref().cmp(key))
+        {
+            Ok(i) => i,
+            Err(0) => return Ok(None),
+            Err(i) => i - 1,
         };
 
         // Read and search the data block
@@ -126,15 +123,11 @@ impl SSTReader {
     }
 
     fn search_block(&self, offset: u64, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        // Try to get from cache first (lock-free!)
         let block_data = if let Some(cached) = self.block_cache.get(&offset) {
-            // Use cached block (already CRC verified)
             Arc::clone(cached.value())
         } else {
-            // Load and verify block from disk
             let mut pos = offset as usize;
 
-            // Read block length
             let block_len =
                 u32::from_le_bytes(self.mmap[pos..pos + 4].try_into().unwrap()) as usize;
             pos += 4;
@@ -142,7 +135,6 @@ impl SSTReader {
             let block_data = &self.mmap[pos..pos + block_len];
             pos += block_len;
 
-            // Verify CRC
             let crc = u32::from_le_bytes(self.mmap[pos..pos + 4].try_into().unwrap());
             let mut hasher = Hasher::new();
             hasher.update(block_data);
@@ -150,14 +142,11 @@ impl SSTReader {
                 return Err(SSTError::Corrupt);
             }
 
-            // Cache the block (lock-free insert)
             let block_vec = Arc::new(block_data.to_vec());
             self.block_cache.insert(offset, Arc::clone(&block_vec));
             block_vec
         };
 
-        // Search within the block data using binary search
-        // Parse all entries first to build search index
         let mut entries = Vec::new();
         let mut idx = 0;
 
@@ -183,16 +172,14 @@ impl SSTReader {
             let entry_val_start = idx;
             idx += val_len;
 
-            // Store just positions for binary search
             entries.push((entry_key, entry_key_start, entry_val_start, val_len));
         }
 
-        // Binary search on sorted entries
         match entries.binary_search_by(|(entry_key, _, _, _)| entry_key.cmp(&key)) {
             Ok(pos) => {
                 let (_, _, val_start, val_len) = entries[pos];
                 let entry_val = &block_data[val_start..val_start + val_len];
-                // Empty value means deletion tombstone
+
                 if entry_val.is_empty() {
                     return Ok(None);
                 }
@@ -209,16 +196,12 @@ impl SSTReader {
 
 impl Clone for SSTReader {
     fn clone(&self) -> Self {
-        // Re-open the file to get a new Mmap
-        // This is safe since the file is immutable after creation
         match Self::open(&self.path) {
             Ok(reader) => reader,
             Err(_) => {
-                // If we can't open, create a clone that shares Arc fields
-                // and re-mmaps the file
                 let file = File::open(&self.path).expect("Failed to reopen SST file");
                 let mmap = unsafe { Mmap::map(&file).expect("Failed to mmap SST file") };
-                
+
                 Self {
                     path: self.path.clone(),
                     mmap,

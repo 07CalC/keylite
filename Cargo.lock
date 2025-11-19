@@ -259,12 +259,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "keylite-core",
+ "keylite-kv",
  "rustyline",
 ]
 
 [[package]]
-name = "keylite-core"
+name = "keylite-kv"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
