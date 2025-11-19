@@ -18,6 +18,7 @@ fn print_help() {
     println!("  put <key> <value>    Put a key-value pair into the database");
     println!("  get <key>            Get a value by key from the database");
     println!("  del <key>            Delete a key from the database");
+    println!("  scan [start] [end]   Scan range of keys from start to end");
     println!("  ping                 Ping the active database");
     println!();
     println!("Meta-commands:");
@@ -171,6 +172,39 @@ fn execute_command(db: &mut Option<(String, Db)>, line: &str) -> Result<CommandR
                 .context("Failed to delete key")?;
 
             println!("OK ({}) [{}]", format_duration(start.elapsed()), path);
+        }
+
+        "scan" => {
+            let (_, db_ref) = match db {
+                Some(tup) => tup,
+                None => {
+                    println!("Error: no database connected");
+                    return Ok(CommandResult::Continue);
+                }
+            };
+            let start_bound: Option<&[u8]> = if parts.len() > 1 {
+                Some(&parts[1].as_bytes())
+            } else {
+                None
+            };
+
+            let end_bound: Option<&[u8]> = if parts.len() > 2 {
+                Some(&parts[2].as_bytes())
+            } else {
+                None
+            };
+
+            let start = Instant::now();
+            let results: Vec<_> = db_ref.scan(start_bound, end_bound).collect();
+
+            for (key, value) in results.into_iter() {
+                println!(
+                    "key: {:?} value: {:?}",
+                    String::from_utf8(key).unwrap_or_else(|_| "nil".to_string()),
+                    String::from_utf8(value).unwrap_or_else(|_| "nil".to_string())
+                );
+            }
+            println!("({})", format_duration(start.elapsed()));
         }
 
         _ => println!("Unknown command: {}", command),

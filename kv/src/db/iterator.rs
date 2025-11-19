@@ -4,14 +4,12 @@ use crate::{
     sst::{SSTIterator, SSTReader},
     storage::Memtable,
 };
-
 #[derive(Clone, Debug)]
 pub struct IterEntry {
     key: Vec<u8>,
     value: Vec<u8>,
     priority: usize,
 }
-
 impl std::cmp::Ord for IterEntry {
     fn cmp(&self, other: &Self) -> Ordering {
         match other.key.cmp(&self.key) {
@@ -67,8 +65,6 @@ impl DbIterator {
         let mut heap = BinaryHeap::new();
         let memtable_priority = immutable_memtable.len() + sstables.len();
 
-        // Collect memtable data into a Vec to avoid lifetime issues
-        // Sort the data by key to maintain order
         let mut memtable_data: Vec<(Vec<u8>, Vec<u8>)> = memtable.iter().collect();
         memtable_data.sort_by(|a, b| a.0.cmp(&b.0));
         sources.push(IterSource::Memtable {
@@ -89,7 +85,11 @@ impl DbIterator {
         }
 
         for (i, sst) in sstables.iter().enumerate() {
-            let priority = immutable_memtable.len() - i - 1;
+            let priority = if immutable_memtable.len() > 0 {
+                immutable_memtable.len() - i - 1
+            } else {
+                memtable_priority - i - 1
+            };
             let iter = SSTIterator::new(sst.clone());
             sources.push(IterSource::SST { iter, priority });
         }
@@ -129,12 +129,10 @@ impl DbIterator {
                     *pos += 1;
                     (k, v, *priority)
                 }
-                IterSource::SST { iter, priority } => {
-                    match iter.next()? {
-                        Ok((k, v)) => (k, v, *priority),
-                        Err(_) => return None, // Skip corrupted entries
-                    }
-                }
+                IterSource::SST { iter, priority } => match iter.next()? {
+                    Ok((k, v)) => (k, v, *priority),
+                    Err(_) => return None,
+                },
             };
             if let Some(start) = start_bound {
                 if &key < start {
@@ -142,7 +140,7 @@ impl DbIterator {
                 }
             }
             if let Some(end) = end_bound {
-                if &key >= end {
+                if &key > end {
                     return None;
                 }
             }
@@ -183,18 +181,14 @@ impl Iterator for DbIterator {
                 }
             }
 
-            // Skip duplicates - only process the highest priority version
             if let Some(ref last) = self.last_key {
                 if &entry.key == last {
                     continue;
                 }
             }
 
-            // Update last_key to skip duplicates from lower priority sources
             self.last_key = Some(entry.key.clone());
 
-            // Skip tombstones (empty values represent deletions)
-            // Note: We still update last_key above so lower-priority versions are skipped
             if entry.value.is_empty() {
                 continue;
             }
