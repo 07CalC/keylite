@@ -1,0 +1,25 @@
+{
+  "name": "keylite-kv",
+  "version": "0.1.0",
+  "description": "Node.js bindings for Keylite key-value store",
+  "main": "index.ts",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "simple": "bun build simple.ts --outfile simple.js --target=node && node simple.js",
+    "example": "bun build example.ts --outfile example.js --target=node && node example.js",
+    "test": "rm -rf test_db && bun build test.ts --outfile test.js --target=node && node test.js && rm -rf test_db"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "ffi-napi": "^4.0.3",
+    "ref-napi": "^3.0.3",
+    "ref-struct-napi": "^1.1.1"
+  }
+}

@@ -160,8 +160,6 @@ impl Iterator for DbIterator {
         loop {
             let entry = self.heap.pop()?;
 
-            // Find the source that produced this entry and advance it
-            // We must do this BEFORE checking for duplicates to ensure all sources progress
             for idx in 0..self.sources.len() {
                 let source_priority = match &self.sources[idx] {
                     IterSource::Memtable { priority, .. } => *priority,

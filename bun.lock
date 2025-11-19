@@ -1,0 +1,39 @@
+{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "dependencies": {
+        "@types/ffi-napi": "^4.0.10",
+        "@types/ref-napi": "^3.0.12",
+        "ref-struct-napi": "^1.1.1",
+      },
+    },
+  },
+  "packages": {
+    "@types/ffi-napi": ["@types/ffi-napi@4.0.10", "", { "dependencies": { "@types/node": "*", "@types/ref-napi": "*", "@types/ref-struct-di": "*" } }, "sha512-Q6TimLDxdg+Obp4W9tgzIhSA25THD6AmR8eM+ZB7bbU96xnkpd7PRXwG4az2rKpreuF90IPr/LlQtetmIfQL2g=="],
+
+    "@types/node": ["@types/node@24.10.1", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-GNWcUTRBgIRJD5zj+Tq0fKOJ5XZajIiBroOF0yvj2bSU1WvNdYS/dn9UxwsujGW4JX06dnHyjV2y9rRaybH0iQ=="],
+
+    "@types/ref-napi": ["@types/ref-napi@3.0.12", "", { "dependencies": { "@types/node": "*" } }, "sha512-UZPKghRaLlWx2lPAphpdtYe62TbGBaPeqUM6gF1vI6FPRIu/Tff/WMAzpJRFU3jJIiD8HiXpVt2RjcFHtA6YRg=="],
+
+    "@types/ref-struct-di": ["@types/ref-struct-di@1.1.12", "", { "dependencies": { "@types/ref-napi": "*" } }, "sha512-R2RNkGIROGoJTbXYTXrsXybnsQD4iAy26ih/G6HCeCB9luWFQKkr537XGz0uGJ1kH8y8RMkdbQmD/wBulrOPHw=="],
+
+    "debug": ["debug@2.6.9", "", { "dependencies": { "ms": "2.0.0" } }, "sha512-bC7ElrdJaJnPbAP+1EotYvqZsb3ecl5wi6Bfi6BJTUcNowp6cvspg0jXznRTKDjm/E7AdgFBVeAPVMNcKGsHMA=="],
+
+    "ms": ["ms@2.0.0", "", {}, "sha512-Tpp60P6IUJDTuOq/5Z8cdskzJujfwqfOTkrwIwj7IRISpnkJnT6SyJ4PCPnGMoFjC9ddhal5KVIYtAt97ix05A=="],
+
+    "node-addon-api": ["node-addon-api@2.0.2", "", {}, "sha512-Ntyt4AIXyaLIuMHF6IOoTakB3K+RWxwtsHNRxllEoA6vPwP9o4866g6YWDLUdnucilZhmkxiHwHr11gAENw+QA=="],
+
+    "node-gyp-build": ["node-gyp-build@4.8.4", "", { "bin": { "node-gyp-build": "bin.js", "node-gyp-build-optional": "optional.js", "node-gyp-build-test": "build-test.js" } }, "sha512-LA4ZjwlnUblHVgq0oBF3Jl/6h/Nvs5fzBLwdEF4nuxnFdsfajde4WfxtJr3CaiH+F6ewcIB/q4jQ4UzPyid+CQ=="],
+
+    "ref-napi": ["ref-napi@1.5.2", "", { "dependencies": { "debug": "^3.1.0", "node-addon-api": "^2.0.0", "node-gyp-build": "^4.2.1" } }, "sha512-hwyNmWpUkt1bDWDW4aiwCoC+SJfJO69UIdjqssNqdaS0sYJpgqzosGg/rLtk69UoQ8drZdI9yyQefM7eEMM3Gw=="],
+
+    "ref-struct-napi": ["ref-struct-napi@1.1.1", "", { "dependencies": { "debug": "2", "ref-napi": "^1.4.2" } }, "sha512-YgS5/d7+kT5zgtySYI5ieH0hREdv+DabgDvoczxsui0f9VLm0rrDcWEj4DHKehsH+tJnVMsLwuyctWgvdEcVRw=="],
+
+    "undici-types": ["undici-types@7.16.0", "", {}, "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw=="],
+
+    "ref-napi/debug": ["debug@3.2.7", "", { "dependencies": { "ms": "^2.1.1" } }, "sha512-CFjzYYAi4ThfiQvizrFQevTTXHtnCqWfe7x1AhgEscTz6ZbLbfoLRLPugTQyBth6f8ZERVUSyWHFD/7Wu4t1XQ=="],
+
+    "ref-napi/debug/ms": ["ms@2.1.3", "", {}, "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA=="],
+  }
+}

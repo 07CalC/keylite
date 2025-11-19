@@ -22,7 +22,6 @@ pub enum KeyliteResult {
     ErrOther = 4,
 }
 
-// TODO: handle the multi thread stuff
 #[no_mangle]
 pub unsafe extern "C" fn keylite_open(
     path: *const c_char,
@@ -331,8 +330,12 @@ pub unsafe extern "C" fn keylite_iter_next(
     val_out: *mut *mut u8,
     val_len_out: *mut usize,
 ) -> KeyliteResult {
-    if iter.is_null() || key_out.is_null() || key_len_out.is_null() 
-        || val_out.is_null() || val_len_out.is_null() {
+    if iter.is_null()
+        || key_out.is_null()
+        || key_len_out.is_null()
+        || val_out.is_null()
+        || val_len_out.is_null()
+    {
         return KeyliteResult::ErrNull;
     }
 
@@ -342,18 +345,18 @@ pub unsafe extern "C" fn keylite_iter_next(
         Some((key, val)) => {
             let key_len = key.len();
             let val_len = val.len();
-            
+
             let mut key_boxed = key.into_boxed_slice();
             let mut val_boxed = val.into_boxed_slice();
-            
+
             *key_out = key_boxed.as_mut_ptr();
             *key_len_out = key_len;
             *val_out = val_boxed.as_mut_ptr();
             *val_len_out = val_len;
-            
+
             std::mem::forget(key_boxed);
             std::mem::forget(val_boxed);
-            
+
             KeyliteResult::Ok
         }
         None => {
