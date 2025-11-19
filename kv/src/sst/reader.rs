@@ -24,6 +24,8 @@ impl SSTReader {
         // read footer from end of file
         // footer is of fixed size always
         // if size doesn't match means that SST is corrupted
+        // even in the case where sst file is empty there must be footer present there
+        // so if mmap.len() < FOOTER_SIZE hence the file is corrupted
         // TODO: what to do with corrupted SSTs?
         if mmap.len() < FOOTER_SIZE {
             return Err(SSTError::Corrupt);
@@ -41,6 +43,7 @@ impl SSTReader {
             mmap,
             block_indexes: Arc::new(block_indexes),
             bloom_filter: Arc::new(bloom_filter),
+            // TODO: make the block_cache a lru so that it doesn't grow indefinitly
             block_cache: Arc::new(DashMap::new()),
         })
     }
@@ -118,7 +121,6 @@ impl SSTReader {
             Err(i) => i - 1,
         };
 
-        // Read and search the data block
         self.search_block(self.block_indexes[block_idx].offset, key)
     }
 
