@@ -4,7 +4,7 @@ use keylite_kv::db::Db;
 use keylite_kv::error::DbError;
 use serde_json::Value;
 
-use crate::collection::{self, CollectionMeta, collection_meta_key, doc_key};
+use crate::collection::{CollectionMeta, collection_meta_key, doc_key};
 pub struct KeyLite {
     kv: Db,
 }
@@ -73,7 +73,7 @@ impl KeyLite {
         };
 
         let key = doc_key(&collection, &id);
-        let bytes = serde_json::to_vec(&doc).unwrap();
+        let bytes = rmp_serde::to_vec(&doc).unwrap();
         self.kv.put(&key, &bytes)?;
         Ok(id)
     }
@@ -82,7 +82,7 @@ impl KeyLite {
         let key = doc_key(&collection, &id);
         Ok(match self.kv.get(&key) {
             Some(bytes) => {
-                let v = serde_json::from_slice::<Value>(&bytes).unwrap();
+                let v = rmp_serde::from_slice::<Value>(&bytes).unwrap();
                 Some(v)
             }
             None => None,
@@ -100,7 +100,7 @@ impl KeyLite {
         let iter = self.kv.scan(Some(&start), Some(&end));
         let mut out = Vec::new();
         for (_k, v) in iter {
-            let doc: Value = serde_json::from_slice(&v).unwrap();
+            let doc: Value = rmp_serde::from_slice(&v).unwrap();
             out.push(doc);
         }
         Ok(out)
