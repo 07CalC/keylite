@@ -19,7 +19,7 @@ Keylite uses a modern SSTable (Sorted String Table) architecture:
 
 - keylite-kv: Core key-value storage engine with SSTable implementation `/kv`
 
-- keylite: CLI tool for interactive with the keylite-kv database `/kv-cli`
+- keylite: CLI tool for interactive with the keylite-kv (document db will also be added here) database `/cli`
 
 - keylite-db (wip): Document database layer built on top of keylite-kv.
 
