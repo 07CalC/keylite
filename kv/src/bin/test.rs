@@ -1,232 +1,233 @@
 use keylite_kv::db::Db;
-use std::time::Instant;
+use rand::{rngs::StdRng, Rng, SeedableRng};
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
+const MAX_SAMPLES: usize = 2_000_000;
+
+// ---- MEMORY MEASUREMENT (LINUX ONLY) ----
+fn get_memory_usage_kb() -> u64 {
+    // Reads process RSS (resident set size)
+    let statm = std::fs::read_to_string("/proc/self/statm").unwrap();
+    let parts: Vec<&str> = statm.split_whitespace().collect();
+    let rss_pages: u64 = parts[1].parse().unwrap();
+    let page_size = 4096u64; // most Linux systems: 4 KB/page
+    rss_pages * page_size / 1024
+}
+
+// ---- BENCH UTILITIES ----
+fn record_latency(buf: &Arc<Vec<AtomicU64>>, index: &AtomicU64, nanos: u64) {
+    let i = index.fetch_add(1, Ordering::Relaxed);
+    if (i as usize) < MAX_SAMPLES {
+        buf[i as usize].store(nanos, Ordering::Relaxed);
+    }
+}
+
+fn compute_percentiles(buf: &Arc<Vec<AtomicU64>>, count: u64) -> (u64, u64, u64) {
+    let mut v = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        let ns = buf[i as usize].load(Ordering::Relaxed);
+        if ns > 0 {
+            v.push(ns);
+        }
+    }
+
+    if v.is_empty() {
+        return (0, 0, 0);
+    }
+
+    v.sort_unstable();
+    let p50 = v[(v.len() as f64 * 0.50) as usize];
+    let p90 = v[(v.len() as f64 * 0.90) as usize];
+    let p99 = v[(v.len() as f64 * 0.99) as usize];
+    (p50, p90, p99)
+}
+
+// ---- MAIN BENCH ----
 fn main() {
-    println!("=== KeyLite Scan Functionality Test ===\n");
+    println!("=== KeyLite Full Concurrency Bench ===\n");
 
-    // Clean up any previous test data
-    let _ = std::fs::remove_dir_all("testdb");
+    let _ = std::fs::remove_dir_all("concurrency_test");
 
-    // Open the database
-    let t0 = Instant::now();
-    let db = Db::open("testdb").unwrap();
-    let open_time = t0.elapsed();
-    println!("✓ Database opened in {:?}\n", open_time);
+    // ---- MEMORY BEFORE OPEN ----
+    let mem_before_open = get_memory_usage_kb();
+    println!("Memory before DB open: {} KB", mem_before_open);
 
-    // Test 1: Insert some sample data
-    println!("--- Test 1: Inserting Sample Data ---");
-    let t1 = Instant::now();
+    // ---- OPEN DB ----
+    let t_open = Instant::now();
+    let db = Arc::new(Db::open("concurrency_test").unwrap());
+    let open_time = t_open.elapsed();
 
-    db.put(b"user:1001", b"Alice").unwrap();
-    db.put(b"user:1002", b"Bob").unwrap();
-    db.put(b"user:1003", b"Charlie").unwrap();
-    db.put(b"user:1004", b"Diana").unwrap();
-    db.put(b"user:1005", b"Eve").unwrap();
+    // ---- MEMORY AFTER OPEN ----
+    let mem_after_open = get_memory_usage_kb();
+    let mem_used_open = mem_after_open - mem_before_open;
 
-    db.put(b"post:2001", b"Hello World").unwrap();
-    db.put(b"post:2002", b"Goodbye World").unwrap();
+    println!("DB open time: {:?}", open_time);
+    println!("Memory after DB open: {} KB", mem_after_open);
+    println!("DB used during open: {} KB\n", mem_used_open);
 
-    db.put(b"score:3001", b"95").unwrap();
-    db.put(b"score:3002", b"87").unwrap();
-    db.put(b"score:3003", b"92").unwrap();
+    // ---- BENCH CONFIG ----
+    const WRITERS: usize = 4;
+    const READERS: usize = 4;
+    const DELETERS: usize = 2;
+    const TEST_DURATION: Duration = Duration::from_secs(10);
 
-    let insert_time = t1.elapsed();
-    println!("✓ Inserted 10 keys in {:?}\n", insert_time);
+    let write_count = Arc::new(AtomicU64::new(0));
+    let read_count = Arc::new(AtomicU64::new(0));
+    let del_count = Arc::new(AtomicU64::new(0));
 
-    // Test 2: Scan all keys
-    println!("--- Test 2: Scan All Keys ---");
-    let t2 = Instant::now();
-    let iter = db.scan(None, None);
-    let results: Vec<_> = iter.collect();
-    let scan_all_time = t2.elapsed();
+    let write_lat = Arc::new(
+        (0..MAX_SAMPLES)
+            .map(|_| AtomicU64::new(0))
+            .collect::<Vec<_>>(),
+    );
+    let read_lat = Arc::new(
+        (0..MAX_SAMPLES)
+            .map(|_| AtomicU64::new(0))
+            .collect::<Vec<_>>(),
+    );
+    let del_lat = Arc::new(
+        (0..MAX_SAMPLES)
+            .map(|_| AtomicU64::new(0))
+            .collect::<Vec<_>>(),
+    );
 
-    println!("Found {} keys in {:?}", results.len(), scan_all_time);
-    for (key, value) in &results {
-        println!(
-            "  {} => {}",
-            String::from_utf8_lossy(key),
-            String::from_utf8_lossy(value)
-        );
+    let write_idx = Arc::new(AtomicU64::new(0));
+    let read_idx = Arc::new(AtomicU64::new(0));
+    let del_idx = Arc::new(AtomicU64::new(0));
+
+    // ---- START BENCH ----
+    let start = Instant::now();
+    let mut handles = vec![];
+
+    // writers
+    for id in 0..WRITERS {
+        let db = Arc::clone(&db);
+        let write_count = Arc::clone(&write_count);
+        let write_lat = Arc::clone(&write_lat);
+        let write_idx = Arc::clone(&write_idx);
+
+        handles.push(thread::spawn(move || {
+            let mut rng = StdRng::seed_from_u64(id as u64 * 9999 + 1);
+
+            while start.elapsed() < TEST_DURATION {
+                let key = format!("key_w{}_{}", id, rng.gen::<u64>());
+                let val = format!("value_{}", rng.gen::<u64>());
+
+                let t0 = Instant::now();
+                db.put(key.as_bytes(), val.as_bytes()).unwrap();
+                let nanos = t0.elapsed().as_nanos() as u64;
+
+                record_latency(&write_lat, &write_idx, nanos);
+                write_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
     }
-    println!();
 
-    // Test 3: Scan with prefix (all users)
-    println!("--- Test 3: Scan Users Only (user:) ---");
-    let t3 = Instant::now();
-    let iter = db.scan(Some(b"user:"), Some(b"user;"));
-    let user_results: Vec<_> = iter.collect();
-    let scan_users_time = t3.elapsed();
+    // readers
+    for id in 0..READERS {
+        let db = Arc::clone(&db);
+        let read_count = Arc::clone(&read_count);
+        let read_lat = Arc::clone(&read_lat);
+        let read_idx = Arc::clone(&read_idx);
+
+        handles.push(thread::spawn(move || {
+            let mut rng = StdRng::seed_from_u64(id as u64 * 5555 + 2);
+
+            while start.elapsed() < TEST_DURATION {
+                let key = format!("key_w{}_{}", rng.gen_range(0..WRITERS), rng.gen::<u64>());
+
+                let t0 = Instant::now();
+                let _ = db.get(key.as_bytes());
+                let nanos = t0.elapsed().as_nanos() as u64;
+
+                record_latency(&read_lat, &read_idx, nanos);
+                read_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+    }
+
+    // deleters
+    for id in 0..DELETERS {
+        let db = Arc::clone(&db);
+        let del_count = Arc::clone(&del_count);
+        let del_lat = Arc::clone(&del_lat);
+        let del_idx = Arc::clone(&del_idx);
+
+        handles.push(thread::spawn(move || {
+            let mut rng = StdRng::seed_from_u64(id as u64 * 1234 + 3);
+
+            while start.elapsed() < TEST_DURATION {
+                let key = format!("key_w{}_{}", rng.gen_range(0..WRITERS), rng.gen::<u64>());
+
+                let t0 = Instant::now();
+                let _ = db.del(key.as_bytes());
+                let nanos = t0.elapsed().as_nanos() as u64;
+
+                record_latency(&del_lat, &del_idx, nanos);
+                del_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+    }
+
+    // wait for threads
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    let wc = write_count.load(Ordering::Relaxed);
+    let rc = read_count.load(Ordering::Relaxed);
+    let dc = del_count.load(Ordering::Relaxed);
+
+    // ---- MEMORY AFTER TEST ----
+    let mem_after_test = get_memory_usage_kb();
+    let mem_used_total = mem_after_test - mem_before_open;
+
+    // ---- RESULTS ----
+    println!("\n=== RESULTS ===\n");
+
+    println!("DB open latency: {:?}", open_time);
 
     println!(
-        "Found {} users in {:?}",
-        user_results.len(),
-        scan_users_time
-    );
-    for (key, value) in &user_results {
-        println!(
-            "  {} => {}",
-            String::from_utf8_lossy(key),
-            String::from_utf8_lossy(value)
-        );
-    }
-    println!();
-
-    // Test 4: Scan with range
-    println!("--- Test 4: Scan Range (user:1002 to user:1004) ---");
-    let t4 = Instant::now();
-    let iter = db.scan(Some(b"user:1002"), Some(b"user:1004"));
-    let range_results: Vec<_> = iter.collect();
-    let scan_range_time = t4.elapsed();
-
-    println!(
-        "Found {} keys in range in {:?}",
-        range_results.len(),
-        scan_range_time
-    );
-    for (key, value) in &range_results {
-        println!(
-            "  {} => {}",
-            String::from_utf8_lossy(key),
-            String::from_utf8_lossy(value)
-        );
-    }
-    println!();
-
-    // Test 5: Update some values and scan again
-    println!("--- Test 5: Update Values and Rescan ---");
-    db.put(b"user:1002", b"Bob Smith").unwrap();
-    db.put(b"user:1003", b"Charlie Brown").unwrap();
-
-    let t5 = Instant::now();
-    let iter = db.scan(Some(b"user:"), Some(b"user;"));
-    let updated_results: Vec<_> = iter.collect();
-    let scan_updated_time = t5.elapsed();
-
-    println!(
-        "Found {} users after updates in {:?}",
-        updated_results.len(),
-        scan_updated_time
-    );
-    for (key, value) in &updated_results {
-        println!(
-            "  {} => {}",
-            String::from_utf8_lossy(key),
-            String::from_utf8_lossy(value)
-        );
-    }
-    println!();
-
-    // Test 6: Delete a key and scan
-    println!("--- Test 6: Delete Key and Rescan ---");
-    db.del(b"user:1003").unwrap();
-
-    let t6 = Instant::now();
-    let iter = db.scan(Some(b"user:"), Some(b"user;"));
-    let after_delete_results: Vec<_> = iter.collect();
-    let scan_after_delete_time = t6.elapsed();
-
-    println!(
-        "Found {} users after deletion in {:?}",
-        after_delete_results.len(),
-        scan_after_delete_time
-    );
-    for (key, value) in &after_delete_results {
-        println!(
-            "  {} => {}",
-            String::from_utf8_lossy(key),
-            String::from_utf8_lossy(value)
-        );
-    }
-    println!();
-
-    // Test 7: Large dataset scan
-    println!("--- Test 7: Large Dataset Scan ---");
-    let t7 = Instant::now();
-
-    for i in 0..1000 {
-        let key = format!("item:{:05}", i);
-        let value = format!("value_{}", i);
-        db.put(key.as_bytes(), value.as_bytes()).unwrap();
-    }
-    let insert_large_time = t7.elapsed();
-    println!("✓ Inserted 1000 items in {:?}", insert_large_time);
-
-    // Scan a subset
-    let t8 = Instant::now();
-    let iter = db.scan(Some(b"item:00100"), Some(b"item:00200"));
-    let large_results: Vec<_> = iter.collect();
-    let scan_large_time = t8.elapsed();
-
-    println!(
-        "Found {} items in range [item:00100, item:00200) in {:?}",
-        large_results.len(),
-        scan_large_time
-    );
-    println!("First 5 items:");
-    for (key, value) in large_results.iter().take(5) {
-        println!(
-            "  {} => {}",
-            String::from_utf8_lossy(key),
-            String::from_utf8_lossy(value)
-        );
-    }
-    println!("Last 5 items:");
-    for (key, value) in large_results.iter().rev().take(5).rev() {
-        println!(
-            "  {} => {}",
-            String::from_utf8_lossy(key),
-            String::from_utf8_lossy(value)
-        );
-    }
-    println!();
-
-    // Test 8: Scan all items (full scan performance)
-    println!("--- Test 8: Full Scan Performance ---");
-    let t9 = Instant::now();
-    let iter = db.scan(None, None);
-    let all_results: Vec<_> = iter.collect();
-    let full_scan_time = t9.elapsed();
-
-    println!(
-        "Full scan returned {} total keys in {:?}",
-        all_results.len(),
-        full_scan_time
+        "Writes:  {} ops  ({:.2} ops/sec)",
+        wc,
+        wc as f64 / TEST_DURATION.as_secs_f64()
     );
     println!(
-        "Average time per key: {:?}",
-        full_scan_time / all_results.len() as u32
+        "Reads:   {} ops  ({:.2} ops/sec)",
+        rc,
+        rc as f64 / TEST_DURATION.as_secs_f64()
     );
-    println!();
-
-    // Test 9: Empty range scan
-    println!("--- Test 9: Empty Range Scan ---");
-    let t10 = Instant::now();
-    let iter = db.scan(Some(b"zzz:"), Some(b"zzz;"));
-    let empty_results: Vec<_> = iter.collect();
-    let empty_scan_time = t10.elapsed();
-
     println!(
-        "Empty range scan returned {} keys in {:?}",
-        empty_results.len(),
-        empty_scan_time
+        "Deletes: {} ops  ({:.2} ops/sec)",
+        dc,
+        dc as f64 / TEST_DURATION.as_secs_f64()
     );
-    println!();
 
-    // Summary
-    println!("=== Performance Summary ===");
-    println!("Database open:        {:?}", open_time);
-    println!("Insert 10 keys:       {:?}", insert_time);
-    println!("Scan all (10 keys):   {:?}", scan_all_time);
-    println!("Scan prefix:          {:?}", scan_users_time);
-    println!("Scan range:           {:?}", scan_range_time);
-    println!("Insert 1000 keys:     {:?}", insert_large_time);
-    println!("Scan subset (100):    {:?}", scan_large_time);
-    println!("Full scan (1010):     {:?}", full_scan_time);
-    println!("Empty scan:           {:?}", empty_scan_time);
-    println!();
+    let (w50, w90, w99) = compute_percentiles(&write_lat, wc);
+    let (r50, r90, r99) = compute_percentiles(&read_lat, rc);
+    let (d50, d90, d99) = compute_percentiles(&del_lat, dc);
 
-    // Clean up
-    drop(db);
-    println!("✓ Database closed successfully");
+    println!("\n--- Write Latency (ns) ---");
+    println!("p50: {} ns,  p90: {} ns,  p99: {} ns", w50, w90, w99);
+
+    println!("\n--- Read Latency (ns) ---");
+    println!("p50: {} ns,  p90: {} ns,  p99: {} ns", r50, r90, r99);
+
+    println!("\n--- Delete Latency (ns) ---");
+    println!("p50: {} ns,  p90: {} ns,  p99: {} ns", d50, d90, d99);
+
+    println!("\n--- MEMORY USAGE ---");
+    println!("Memory before DB open:  {} KB", mem_before_open);
+    println!("Memory after DB open:   {} KB", mem_after_open);
+    println!("Memory after benchmark: {} KB", mem_after_test);
+    println!("Total DB memory used:   {} KB", mem_used_total);
+
     println!("\n=== Test Complete ===");
 }

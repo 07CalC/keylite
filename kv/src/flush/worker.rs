@@ -1,3 +1,6 @@
+// flush worker runs on a background thread, it's job is to flush the memtable to the disk
+// while the process is running flush worked only flushes the oldes immutable memtable
+
 use arc_swap::ArcSwap;
 use crossbeam_channel::Receiver;
 use std::path::Path;
@@ -36,20 +39,28 @@ pub fn flush_memtable_to_disk(
     sstables: &Arc<ArcSwap<Vec<SSTReader>>>,
     next_sst_id: &Arc<AtomicU64>,
 ) -> Result<()> {
+    // if memtable is empty there is nothing to flush
     if memtable.is_empty() {
         return Ok(());
     }
 
+    // get the next sst_id that the worker gonna write to the disk
     let sst_id = next_sst_id.fetch_add(1, Ordering::Relaxed);
     let sst_path = dir.join(format!("sst-{}.db", sst_id));
 
+    // get all the entries that memtable has
     let mut entries: Vec<(Vec<u8>, Vec<u8>)> = memtable.iter().collect();
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
+    // create new SSTWriter, implemented in /sst/writer.rs
     let mut writer = SSTWriter::new(&sst_path)?;
     for (key, val) in entries {
+        // writer.add method adds the entry in the buffer
         writer.add(&key, &val)?;
     }
+
+    // writer.finish method wrties all the entries is has in the buffer, with the bloom filters,
+    // block indexes and the footer
     writer.finish()?;
 
     let reader = SSTReader::open(&sst_path)?;
@@ -59,6 +70,7 @@ pub fn flush_memtable_to_disk(
         let mut new_sstables = (**current).clone();
         new_sstables.insert(0, reader.clone());
 
+        // insert the newly created sstable in the global sst list
         let prev = sstables.compare_and_swap(&current, Arc::new(new_sstables));
         if Arc::ptr_eq(&*prev, &*current) {
             break;

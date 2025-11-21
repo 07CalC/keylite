@@ -110,14 +110,22 @@ impl Db {
         let memtable = self.memtable.load();
         memtable.put(key.to_vec(), val.to_vec());
 
+        // memtables are configured to be of a certain max size to cap the memory usage after that
+        // limit is reached the memtables should be freezed and pushed to the flush queue which
+        // will then write the memtable to sst file
         let should_flush = memtable.size_bytes() >= MEMTABLE_SIZE_THRESHOLD;
 
         if should_flush {
+            // replace the memtable with a new empty one so that writes don't have to wait until
+            // the memtable is being flushed to the file sys
             let new_memtable = Arc::new(Memtable::new());
             let old_memtable = self.memtable.swap(new_memtable);
 
             if !old_memtable.is_empty() {
                 loop {
+                    // at a time only 1 mutable and 2 immutable memtables are allowed to be in the
+                    // memory, after the limit of 2 is reached the oldest immutable memtable is
+                    // sent to the flush queue which will write it to the sst file
                     let current = self.immutable_memtables.load();
                     let mut new_immutables = (**current).clone();
                     new_immutables.push(old_memtable.clone());
@@ -128,9 +136,13 @@ impl Db {
                         None
                     };
 
+                    // swap the immutable memtables with new one
+                    // the oldest one being replaced by a new emtpy one
                     let prev = self
                         .immutable_memtables
                         .compare_and_swap(&current, Arc::new(new_immutables));
+
+                    // send the oldest immutable memtable to the flush queue
                     if Arc::ptr_eq(&*prev, &*current) {
                         if let Some(oldest) = oldest {
                             let _ = self.flush_sender.send(FlushMessage::Flush(oldest));
@@ -140,6 +152,9 @@ impl Db {
                 }
             }
 
+            // at a moment only certain number of sstables are allowed after reaching that limit
+            // the sstables are sent for compaction, where they are merged into one big sstable
+            // removing all the duplicates, tombstones
             let sst_count = self.sstables.load().len();
             if sst_count >= MAX_SSTABLES {
                 let _ = self.compaction_sender.send(CompactionMessage::Compact);
@@ -191,11 +206,14 @@ impl Db {
         None
     }
 
+    // deletion is not on-spot, rather its like putting a tombstone (i.e. emtpy value) to that
+    // particular key, after compaction the old entries with some value are removed, also the
+    // emtpy value entry is also removed
     pub fn del(&self, key: &[u8]) -> Result<()> {
         self.put(key, &[])
     }
 
-    // performance can be enhanced for empty scans
+    //TODO: performance can be enhanced for empty scans
     // i.e. i scanned from ff:11 to ff::66 but when ff:11 to ff::66 nothing exists it takes too
     // much time
     pub fn scan(&self, start: Option<&[u8]>, end: Option<&[u8]>) -> DbIterator {
@@ -210,11 +228,15 @@ impl Db {
     }
 }
 
+// custom memory drop implementation to join all the threads (i.e. the compaction and flush queue
+// threads) working in the background, and to flush all the data currently in memory to disk so
+// that no data is lost during shutdown
 impl Drop for Db {
     fn drop(&mut self) {
         let remaining_mt = self.memtable.load_full();
 
         if !remaining_mt.is_empty() {
+            // flush the mutable memtable with whatever data it has
             let _ =
                 flush_memtable_to_disk(&remaining_mt, &self.dir, &self.sstables, &self.next_sst_id);
         }
@@ -222,13 +244,17 @@ impl Drop for Db {
         let immutable = self.immutable_memtables.load_full();
 
         for mt in immutable.iter() {
+            // flush all the immutable memtables to the disk
             if !mt.is_empty() {
                 let _ = flush_memtable_to_disk(mt, &self.dir, &self.sstables, &self.next_sst_id);
             }
         }
 
+        // stop the flush and compaction workers
         let _ = self.flush_sender.send(FlushMessage::Shutdown);
         let _ = self.compaction_sender.send(CompactionMessage::Shutdown);
+
+        // join the background threads
         if let Some(handle) = self.flush_thread.take() {
             let _ = handle.join();
         }
