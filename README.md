@@ -1,18 +1,6 @@
 # keylite
 
-A lightweight, embedded key-value database written in Rust with support for multiple programming languages via C FFI.
-
-## Features
-
-- **Simple key-value storage** with put/get/delete operations
-- **SSTable-based architecture** for fast opens and efficient storage
-- **No RAM index required** - uses sparse index with bloom filters
-- **Fast database opens** - loads metadata in microseconds (no index rebuild)
-- **In-memory memtable** with automatic flush to disk
-- **Automatic compaction** - merges SSTables automatically
-- **Thread-safe operations**
-- **Multi-language support via C FFI** (C, Python, Node.js, Go, Ruby, Java, etc.)
-- **String API** - Automatic UTF-8 encoding/decoding for text data
+A lightweight, embedded key-value (document db wip) database written in Rust with support for multiple programming languages.
 
 ## Architecture
 
@@ -20,117 +8,69 @@ Keylite uses a modern SSTable (Sorted String Table) architecture:
 
 - **Memtable**: Recent writes stored in memory (BTreeMap) up to 4MB
 - **SSTables**: Immutable sorted files on disk with:
-  - 64KB data blocks with sorted key-value pairs
+  - 16KB data blocks with sorted key-value pairs
   - Sparse index for fast lookups (one entry per block)
   - Bloom filters for efficient negative lookups
   - CRC32 checksums for data integrity
-- **Automatic flushing**: Memtable flushes to SSTable when size threshold reached
-- **Automatic compaction**: Merges SSTables when count exceeds threshold
+- **Automatic flushing**: Memtable flushes to SSTable when size threshold reached (via separate thread)
+- **Automatic compaction**: Merges SSTables when count exceeds threshold (via separate thread)
 
-### Performance Benefits
+## Crates:
 
-- **Fast opens**: ~50-100 microseconds (no index rebuild needed)
-- **Memory efficient**: Only sparse index + bloom filters in RAM (~16-32MB per SSTable with LRU block cache)
-- **Fast lookups**: Binary search on sparse index + bloom filters + LRU cache
-- **High throughput**: ~675k writes/sec, ~109k sequential reads/sec, ~103k random reads/sec, ~160k negative lookups/sec
+- keylite-kv: Core key-value storage engine with SSTable implementation `/kv`
 
-## Usage
+- keylite: CLI tool for interactive with the keylite-kv database `/kv-cli`
 
-### Interactive Shell
+- keylite-db (wip): Document database layer built on top of keylite-kv.
 
-KeyLite includes an interactive shell similar to SQLite for easy database interaction:
+## SSTable file format
 
-```bash
-# Build the CLI
-cargo build --release --package keylite-cli
-
-# Start interactive shell
-./target/release/keylite-cli --path ./mydb
+```
++--------------------------+
+| Data Block 0             |
+|  key_len | val_len | K|V |
++--------------------------+
+| Data Block 1             |
++--------------------------+
+| ...                      |
++--------------------------+
+| Bloom Filter             |
++--------------------------+
+| Block Index              |
++--------------------------+
+| Footer (pointers)        |
++--------------------------+
 ```
 
-Example session:
+
+## Roadmap
+
+- [x] SSTable reader, writer
+- [x] bloom filters
+- [x] compaction
+- [ ] transactions
+- [ ] compression
+- [ ] Document db layer `/db` (wip)
+- [ ] bindings for other languages
+
+## Benchmarks
+
+> for a database with 2 million entries
+
+- DB open time: `501us`
+- write throughput: `174887` ops/sec
+- read throughput: `103028` ops/sec
+- del throughput: `99972` ops/sec
+
 ```
-KeyLite version 0.1.0
-Database: ./mydb
-Opened in 45.23μs
-Type .help for usage hints
+--- Write Latency (ns) ---
+p50: 4927 ns,  p90: 5895 ns,  p99: 14512 ns
 
-keylite> put username Alice
-OK (12.34μs)
+--- Read Latency (ns) ---
+p50: 6897 ns,  p90: 18503 ns,  p99: 325617 ns
 
-keylite> get username
-Alice
-(15.67μs | 1 row)
-
-keylite> del username
-OK (10.23μs)
-
-keylite> .exit
-Goodbye!
-```
-
-Features:
-- Interactive REPL with command history
-- Performance timing for every operation
-- Tab completion and line editing
-- Persistent command history
-
-See [keylite-cli/README.md](keylite-cli/README.md) for full CLI documentation.
-
-### Rust Library
-
-```rust
-use keylite::db::Db;
-
-let db = Db::open("mydb")?;
-db.put(b"hello", b"world")?;
-let value = db.get(b"hello")?;
-db.del(b"hello")?;
-// Flush happens automatically - no need to call flush()!
+--- Delete Latency (ns) ---
+p50: 4849 ns,  p90: 5788 ns,  p99: 12901 ns
 ```
 
-### Other Languages (C FFI)
 
-Build the shared library:
-```bash
-cargo build --release
-```
-
-#### String API (Recommended for Text)
-
-```c
-// C example - automatic UTF-8 handling
-keylite_put_str(db, "name", "Alice");
-char* value = NULL;
-keylite_get_str(db, "name", &value);
-printf("%s\n", value);
-keylite_free_str(value);
-```
-
-```python
-# Python example - automatic UTF-8 handling
-keylite.keylite_put_str(db, b"name", b"Alice")
-val_ptr = ctypes.c_char_p()
-keylite.keylite_get_str(db, b"name", ctypes.byref(val_ptr))
-print(val_ptr.value.decode('utf-8'))
-keylite.keylite_free_str(val_ptr)
-```
-
-#### Binary API (For Raw Data)
-
-For binary data, use the lower-level API with explicit lengths:
-```c
-keylite_put(db, key, key_len, val, val_len);
-keylite_get(db, key, key_len, &val_out, &val_len_out);
-```
-
-See [FFI.md](FFI.md) for complete documentation on using Keylite from:
-- C
-- Python
-- Node.js
-- Go
-- Ruby
-- Java
-- And more!
-
-Examples are provided in the `examples/` directory.

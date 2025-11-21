@@ -1,7 +1,0 @@
-{
-  "dependencies": {
-    "@types/ffi-napi": "^4.0.10",
-    "@types/ref-napi": "^3.0.12",
-    "ref-struct-napi": "^1.1.1"
-  }
-}
