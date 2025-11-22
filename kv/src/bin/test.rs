@@ -117,8 +117,8 @@ fn main() {
             let mut rng = StdRng::seed_from_u64(id as u64 * 9999 + 1);
 
             while start.elapsed() < TEST_DURATION {
-                let key = format!("key_w{}_{}", id, rng.gen::<u64>());
-                let val = format!("value_{}", rng.gen::<u64>());
+                let key = format!("key_w{}_{}", id, rng.random::<u64>());
+                let val = format!("value_{}", rng.random::<u64>());
 
                 let t0 = Instant::now();
                 db.put(key.as_bytes(), val.as_bytes()).unwrap();
@@ -141,7 +141,7 @@ fn main() {
             let mut rng = StdRng::seed_from_u64(id as u64 * 5555 + 2);
 
             while start.elapsed() < TEST_DURATION {
-                let key = format!("key_w{}_{}", rng.gen_range(0..WRITERS), rng.gen::<u64>());
+                let key = format!("key_w{}_{}", rng.random_range(0..WRITERS), rng.random::<u64>());
 
                 let t0 = Instant::now();
                 let _ = db.get(key.as_bytes());
@@ -164,7 +164,7 @@ fn main() {
             let mut rng = StdRng::seed_from_u64(id as u64 * 1234 + 3);
 
             while start.elapsed() < TEST_DURATION {
-                let key = format!("key_w{}_{}", rng.gen_range(0..WRITERS), rng.gen::<u64>());
+                let key = format!("key_w{}_{}", rng.random_range(0..WRITERS), rng.random::<u64>());
 
                 let t0 = Instant::now();
                 let _ = db.del(key.as_bytes());

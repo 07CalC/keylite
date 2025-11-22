@@ -1,9 +1,16 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Index {
+    pub field: String,
+    pub unique: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CollectionMeta {
     pub name: String,
     pub created_at: i64,
+    pub indexes: Option<Vec<Index>>,
 }
 
 pub fn collection_meta_key(name: &str) -> Vec<u8> {

@@ -26,7 +26,6 @@ impl SSTReader {
         // if size doesn't match means that SST is corrupted
         // even in the case where sst file is empty there must be footer present there
         // so if mmap.len() < FOOTER_SIZE hence the file is corrupted
-        // TODO: what to do with corrupted SSTs?
         if mmap.len() < FOOTER_SIZE {
             return Err(SSTError::Corrupt);
         }
