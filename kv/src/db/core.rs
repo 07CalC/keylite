@@ -123,14 +123,14 @@ impl Db {
 
             if !old_memtable.is_empty() {
                 loop {
-                    // at a time only 1 mutable and 2 immutable memtables are allowed to be in the
-                    // memory, after the limit of 2 is reached the oldest immutable memtable is
+                    // at a time only 1 mutable and 1 immutable memtables are allowed to be in the
+                    // memory, after the limit of 1 is reached the oldest immutable memtable is
                     // sent to the flush queue which will write it to the sst file
                     let current = self.immutable_memtables.load();
                     let mut new_immutables = (**current).clone();
                     new_immutables.push(old_memtable.clone());
 
-                    let oldest = if new_immutables.len() > 2 {
+                    let oldest = if new_immutables.len() > 1 {
                         Some(new_immutables.remove(0))
                     } else {
                         None
