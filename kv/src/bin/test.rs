@@ -3,12 +3,14 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc,
+        Arc, Barrier,
     },
     thread,
     time::{Duration, Instant},
 };
 
+// Be careful with this: 20_000_000 samples * 3 latency buffers * 8 bytes ~= 480 MB just for data
+// You can tune this as needed. I’ll keep your number but I'd recommend starting lower (e.g. 2_000_000).
 const MAX_SAMPLES: usize = 2_000_000;
 
 // ---- MEMORY MEASUREMENT (LINUX ONLY) ----
@@ -29,10 +31,17 @@ fn record_latency(buf: &Arc<Vec<AtomicU64>>, index: &AtomicU64, nanos: u64) {
     }
 }
 
+/// `count` must be the number of *recorded* samples, clamped to MAX_SAMPLES.
 fn compute_percentiles(buf: &Arc<Vec<AtomicU64>>, count: u64) -> (u64, u64, u64) {
-    let mut v = Vec::with_capacity(count as usize);
-    for i in 0..count {
-        let ns = buf[i as usize].load(Ordering::Relaxed);
+    if count == 0 {
+        return (0, 0, 0);
+    }
+
+    let limit = std::cmp::min(count as usize, MAX_SAMPLES);
+    let mut v = Vec::with_capacity(limit);
+
+    for i in 0..limit {
+        let ns = buf[i].load(Ordering::Relaxed);
         if ns > 0 {
             v.push(ns);
         }
@@ -43,9 +52,21 @@ fn compute_percentiles(buf: &Arc<Vec<AtomicU64>>, count: u64) -> (u64, u64, u64)
     }
 
     v.sort_unstable();
-    let p50 = v[(v.len() as f64 * 0.50) as usize];
-    let p90 = v[(v.len() as f64 * 0.90) as usize];
-    let p99 = v[(v.len() as f64 * 0.99) as usize];
+
+    // Use (len - 1) for nicer percentile indexing
+    let len = v.len();
+    let idx = |p: f64| -> usize {
+        let pos = (p * (len as f64 - 1.0)).round() as usize;
+        if pos >= len {
+            len - 1
+        } else {
+            pos
+        }
+    };
+
+    let p50 = v[idx(0.50)];
+    let p90 = v[idx(0.90)];
+    let p99 = v[idx(0.99)];
     (p50, p90, p99)
 }
 
@@ -73,9 +94,9 @@ fn main() {
     println!("DB used during open: {} KB\n", mem_used_open);
 
     // ---- BENCH CONFIG ----
-    const WRITERS: usize = 4;
-    const READERS: usize = 4;
-    const DELETERS: usize = 2;
+    const WRITERS: usize = 1;
+    const READERS: usize = 1;
+    const DELETERS: usize = 1;
     const TEST_DURATION: Duration = Duration::from_secs(10);
 
     let write_count = Arc::new(AtomicU64::new(0));
@@ -102,8 +123,12 @@ fn main() {
     let read_idx = Arc::new(AtomicU64::new(0));
     let del_idx = Arc::new(AtomicU64::new(0));
 
+    // ---- SHARED END TIME + BARRIER ----
+    let end_time = Instant::now() + TEST_DURATION;
+    let total_threads = WRITERS + READERS + DELETERS;
+    let barrier = Arc::new(Barrier::new(total_threads));
+
     // ---- START BENCH ----
-    let start = Instant::now();
     let mut handles = vec![];
 
     // writers
@@ -112,13 +137,19 @@ fn main() {
         let write_count = Arc::clone(&write_count);
         let write_lat = Arc::clone(&write_lat);
         let write_idx = Arc::clone(&write_idx);
+        let barrier = Arc::clone(&barrier);
 
         handles.push(thread::spawn(move || {
             let mut rng = StdRng::seed_from_u64(id as u64 * 9999 + 1);
 
-            while start.elapsed() < TEST_DURATION {
-                let key = format!("key_w{}_{}", id, rng.random::<u64>());
-                let val = format!("value_{}", rng.random::<u64>());
+            // synchronize start
+            barrier.wait();
+
+            while Instant::now() < end_time {
+                // NOTE: This pattern creates mostly-miss keys for readers/deleters.
+                // If you want realistic hits, switch to a shared keyspace.
+                let key = format!("key_w{}_{}", id, rng.gen::<u64>());
+                let val = format!("value_{}", rng.gen::<u64>());
 
                 let t0 = Instant::now();
                 db.put(key.as_bytes(), val.as_bytes()).unwrap();
@@ -136,12 +167,16 @@ fn main() {
         let read_count = Arc::clone(&read_count);
         let read_lat = Arc::clone(&read_lat);
         let read_idx = Arc::clone(&read_idx);
+        let barrier = Arc::clone(&barrier);
 
         handles.push(thread::spawn(move || {
             let mut rng = StdRng::seed_from_u64(id as u64 * 5555 + 2);
 
-            while start.elapsed() < TEST_DURATION {
-                let key = format!("key_w{}_{}", rng.random_range(0..WRITERS), rng.random::<u64>());
+            // synchronize start
+            barrier.wait();
+
+            while Instant::now() < end_time {
+                let key = format!("key_w{}_{}", rng.gen_range(0..WRITERS), rng.gen::<u64>());
 
                 let t0 = Instant::now();
                 let _ = db.get(key.as_bytes());
@@ -159,12 +194,16 @@ fn main() {
         let del_count = Arc::clone(&del_count);
         let del_lat = Arc::clone(&del_lat);
         let del_idx = Arc::clone(&del_idx);
+        let barrier = Arc::clone(&barrier);
 
         handles.push(thread::spawn(move || {
             let mut rng = StdRng::seed_from_u64(id as u64 * 1234 + 3);
 
-            while start.elapsed() < TEST_DURATION {
-                let key = format!("key_w{}_{}", rng.random_range(0..WRITERS), rng.random::<u64>());
+            // synchronize start
+            barrier.wait();
+
+            while Instant::now() < end_time {
+                let key = format!("key_w{}_{}", rng.gen_range(0..WRITERS), rng.gen::<u64>());
 
                 let t0 = Instant::now();
                 let _ = db.del(key.as_bytes());
@@ -184,6 +223,11 @@ fn main() {
     let wc = write_count.load(Ordering::Relaxed);
     let rc = read_count.load(Ordering::Relaxed);
     let dc = del_count.load(Ordering::Relaxed);
+
+    // Use the number of actually recorded samples, not total ops
+    let w_samples = write_idx.load(Ordering::Relaxed).min(MAX_SAMPLES as u64);
+    let r_samples = read_idx.load(Ordering::Relaxed).min(MAX_SAMPLES as u64);
+    let d_samples = del_idx.load(Ordering::Relaxed).min(MAX_SAMPLES as u64);
 
     // ---- MEMORY AFTER TEST ----
     let mem_after_test = get_memory_usage_kb();
@@ -210,9 +254,9 @@ fn main() {
         dc as f64 / TEST_DURATION.as_secs_f64()
     );
 
-    let (w50, w90, w99) = compute_percentiles(&write_lat, wc);
-    let (r50, r90, r99) = compute_percentiles(&read_lat, rc);
-    let (d50, d90, d99) = compute_percentiles(&del_lat, dc);
+    let (w50, w90, w99) = compute_percentiles(&write_lat, w_samples);
+    let (r50, r90, r99) = compute_percentiles(&read_lat, r_samples);
+    let (d50, d90, d99) = compute_percentiles(&del_lat, d_samples);
 
     println!("\n--- Write Latency (ns) ---");
     println!("p50: {} ns,  p90: {} ns,  p99: {} ns", w50, w90, w99);

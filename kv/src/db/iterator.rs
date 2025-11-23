@@ -188,12 +188,12 @@ impl DbIterator {
                 }
             }
 
-            // similarly if the key is more than the end bound means we don't need that entry we
+            // similarly if the key is more than or equal to the end bound means we don't need that entry we
             // need something lower that that, and since we've already reached to a point where key
-            // is greater than the end bound means we won't be getting anything of our use after
-            // that
+            // is greater than or equal to the end bound means we won't be getting anything of our use after
+            // that (end bound is exclusive)
             if let Some(end) = end_bound {
-                if &key > end {
+                if &key >= end {
                     return None;
                 }
             }
