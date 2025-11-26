@@ -4,14 +4,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-// Helper function to create a test database with a unique path
 fn create_test_db(test_name: &str) -> Db {
     let path = format!("test_data/{}", test_name);
     let _ = std::fs::remove_dir_all(&path);
     Db::open(&path).unwrap()
 }
 
-// Helper function to clean up test database
 fn cleanup_test_db(test_name: &str) {
     let path = format!("test_data/{}", test_name);
     let _ = std::fs::remove_dir_all(&path);
@@ -22,16 +20,16 @@ fn test_basic_put_get() {
     let db = create_test_db("basic_put_get");
 
     db.put(b"key1", b"value1").unwrap();
-    assert_eq!(db.get(b"key1"), Some(b"value1".to_vec()));
+    assert_eq!(db.get(b"key1").unwrap(), Some(b"value1".to_vec()));
 
     db.put(b"key2", b"value2").unwrap();
     db.put(b"key3", b"value3").unwrap();
 
-    assert_eq!(db.get(b"key1"), Some(b"value1".to_vec()));
-    assert_eq!(db.get(b"key2"), Some(b"value2".to_vec()));
-    assert_eq!(db.get(b"key3"), Some(b"value3".to_vec()));
+    assert_eq!(db.get(b"key1").unwrap(), Some(b"value1".to_vec()));
+    assert_eq!(db.get(b"key2").unwrap(), Some(b"value2".to_vec()));
+    assert_eq!(db.get(b"key3").unwrap(), Some(b"value3".to_vec()));
 
-    assert_eq!(db.get(b"nonexistent"), None);
+    assert_eq!(db.get(b"nonexistent").unwrap(), None);
 
     drop(db);
     cleanup_test_db("basic_put_get");
@@ -42,13 +40,13 @@ fn test_overwrite() {
     let db = create_test_db("overwrite");
 
     db.put(b"key1", b"value1").unwrap();
-    assert_eq!(db.get(b"key1"), Some(b"value1".to_vec()));
+    assert_eq!(db.get(b"key1").unwrap(), Some(b"value1".to_vec()));
 
     db.put(b"key1", b"value2").unwrap();
-    assert_eq!(db.get(b"key1"), Some(b"value2".to_vec()));
+    assert_eq!(db.get(b"key1").unwrap(), Some(b"value2".to_vec()));
 
     db.put(b"key1", b"value3").unwrap();
-    assert_eq!(db.get(b"key1"), Some(b"value3".to_vec()));
+    assert_eq!(db.get(b"key1").unwrap(), Some(b"value3".to_vec()));
 
     drop(db);
     cleanup_test_db("overwrite");
@@ -59,15 +57,15 @@ fn test_delete() {
     let db = create_test_db("delete");
 
     db.put(b"key1", b"value1").unwrap();
-    assert_eq!(db.get(b"key1"), Some(b"value1".to_vec()));
+    assert_eq!(db.get(b"key1").unwrap(), Some(b"value1".to_vec()));
 
     db.del(b"key1").unwrap();
-    assert_eq!(db.get(b"key1"), None);
+    assert_eq!(db.get(b"key1").unwrap(), None);
 
     db.del(b"nonexistent").unwrap();
 
     db.put(b"key1", b"new_value").unwrap();
-    assert_eq!(db.get(b"key1"), Some(b"new_value".to_vec()));
+    assert_eq!(db.get(b"key1").unwrap(), Some(b"new_value".to_vec()));
 
     drop(db);
     cleanup_test_db("delete");
@@ -78,10 +76,10 @@ fn test_empty_key_value() {
     let db = create_test_db("empty_key_value");
 
     db.put(b"key1", b"").unwrap();
-    assert_eq!(db.get(b"key1"), None); // Empty value treated as deletion
+    assert_eq!(db.get(b"key1").unwrap(), None); // Empty value treated as deletion
 
     db.put(b"", b"value").unwrap();
-    assert_eq!(db.get(b""), Some(b"value".to_vec()));
+    assert_eq!(db.get(b"").unwrap(), Some(b"value".to_vec()));
 
     drop(db);
     cleanup_test_db("empty_key_value");
@@ -93,11 +91,11 @@ fn test_large_values() {
 
     let large_value = vec![b'x'; 1024 * 1024];
     db.put(b"large_key", &large_value).unwrap();
-    assert_eq!(db.get(b"large_key"), Some(large_value.clone()));
+    assert_eq!(db.get(b"large_key").unwrap(), Some(large_value.clone()));
 
     let very_large_value = vec![b'y'; 10 * 1024 * 1024];
     db.put(b"very_large_key", &very_large_value).unwrap();
-    assert_eq!(db.get(b"very_large_key"), Some(very_large_value));
+    assert_eq!(db.get(b"very_large_key").unwrap(), Some(very_large_value));
 
     drop(db);
     cleanup_test_db("large_values");
@@ -118,7 +116,10 @@ fn test_many_keys() {
     for i in 0..num_keys {
         let key = format!("key_{:05}", i);
         let expected_value = format!("value_{}", i);
-        assert_eq!(db.get(key.as_bytes()), Some(expected_value.into_bytes()));
+        assert_eq!(
+            db.get(key.as_bytes()).unwrap(),
+            Some(expected_value.into_bytes())
+        );
     }
 
     drop(db);
@@ -148,7 +149,7 @@ fn test_persistence() {
             let key = format!("persistent_key_{:05}", i);
             let expected_value = format!("persistent_value_{}", i);
             assert_eq!(
-                db.get(key.as_bytes()),
+                db.get(key.as_bytes()).unwrap(),
                 Some(expected_value.into_bytes()),
                 "Mismatch for key: {}",
                 key
@@ -197,17 +198,26 @@ fn test_persistence_with_updates() {
         for i in 0..2500 {
             let key = format!("key_{:05}", i);
             let expected_value = format!("updated_value_{}", i);
-            assert_eq!(db.get(key.as_bytes()), Some(expected_value.into_bytes()));
+            assert_eq!(
+                db.get(key.as_bytes()).unwrap(),
+                Some(expected_value.into_bytes())
+            );
         }
         for i in 2500..5000 {
             let key = format!("key_{:05}", i);
             let expected_value = format!("value_{}", i);
-            assert_eq!(db.get(key.as_bytes()), Some(expected_value.into_bytes()));
+            assert_eq!(
+                db.get(key.as_bytes()).unwrap(),
+                Some(expected_value.into_bytes())
+            );
         }
         for i in 5000..7500 {
             let key = format!("key_{:05}", i);
             let expected_value = format!("value_{}", i);
-            assert_eq!(db.get(key.as_bytes()), Some(expected_value.into_bytes()));
+            assert_eq!(
+                db.get(key.as_bytes()).unwrap(),
+                Some(expected_value.into_bytes())
+            );
         }
     }
 
@@ -240,10 +250,13 @@ fn test_persistence_with_deletes() {
         for i in 0..10000 {
             let key = format!("key_{:05}", i);
             if i % 2 == 0 {
-                assert_eq!(db.get(key.as_bytes()), None);
+                assert_eq!(db.get(key.as_bytes()).unwrap(), None);
             } else {
                 let expected_value = format!("value_{}", i);
-                assert_eq!(db.get(key.as_bytes()), Some(expected_value.into_bytes()));
+                assert_eq!(
+                    db.get(key.as_bytes()).unwrap(),
+                    Some(expected_value.into_bytes())
+                );
             }
         }
     }
@@ -278,7 +291,10 @@ fn test_concurrent_writes() {
         for i in 0..writes_per_thread {
             let key = format!("thread_{}_key_{}", thread_id, i);
             let expected_value = format!("thread_{}_value_{}", thread_id, i);
-            assert_eq!(db.get(key.as_bytes()), Some(expected_value.into_bytes()));
+            assert_eq!(
+                db.get(key.as_bytes()).unwrap(),
+                Some(expected_value.into_bytes())
+            );
         }
     }
 
@@ -330,14 +346,20 @@ fn test_concurrent_reads_writes() {
     for i in 0..100 {
         let key = format!("key_{}", i);
         let expected_value = format!("value_{}", i);
-        assert_eq!(db.get(key.as_bytes()), Some(expected_value.into_bytes()));
+        assert_eq!(
+            db.get(key.as_bytes()).unwrap(),
+            Some(expected_value.into_bytes())
+        );
     }
 
     for writer_id in 0..num_writers {
         for i in 0..operations {
             let key = format!("writer_{}_key_{}", writer_id, i);
             let expected_value = format!("writer_{}_value_{}", writer_id, i);
-            assert_eq!(db.get(key.as_bytes()), Some(expected_value.into_bytes()));
+            assert_eq!(
+                db.get(key.as_bytes()).unwrap(),
+                Some(expected_value.into_bytes())
+            );
         }
     }
 
@@ -367,7 +389,7 @@ fn test_concurrent_same_key() {
     }
 
     // Key should have some value (last write wins)
-    let result = db.get(b"shared_key");
+    let result = db.get(b"shared_key").unwrap();
     assert!(result.is_some());
 
     cleanup_test_db("concurrent_same_key");
@@ -395,7 +417,7 @@ fn test_sequential_consistency() {
                 expected_state.insert(key.clone(), None);
             }
             2 => {
-                let actual = db.get(key.as_bytes());
+                let actual = db.get(key.as_bytes()).unwrap();
                 let expected = expected_state.get(&key).cloned().unwrap_or(None);
                 assert_eq!(actual, expected, "Mismatch for key: {}", key);
             }
@@ -404,7 +426,7 @@ fn test_sequential_consistency() {
     }
 
     for (key, expected_value) in expected_state.iter() {
-        let actual = db.get(key.as_bytes());
+        let actual = db.get(key.as_bytes()).unwrap();
         assert_eq!(&actual, expected_value, "Final mismatch for key: {}", key);
     }
 
@@ -430,7 +452,7 @@ fn test_force_flush_and_compaction() {
     for i in 0..num_entries {
         let key = format!("key_{:08}", i);
         let expected_value = format!("value_{}", i);
-        let actual = db.get(key.as_bytes());
+        let actual = db.get(key.as_bytes()).unwrap();
         assert_eq!(
             actual,
             Some(expected_value.into_bytes()),
@@ -464,7 +486,10 @@ fn test_recovery_after_flush() {
         for i in 0..50_000 {
             let key = format!("key_{:08}", i);
             let expected_value = format!("value_{}", i);
-            assert_eq!(db.get(key.as_bytes()), Some(expected_value.into_bytes()));
+            assert_eq!(
+                db.get(key.as_bytes()).unwrap(),
+                Some(expected_value.into_bytes())
+            );
         }
     }
 
@@ -479,13 +504,16 @@ fn test_binary_keys_and_values() {
     let binary_value1 = vec![255u8, 128, 64, 32, 16, 8, 4, 2, 1, 0];
 
     db.put(&binary_key1, &binary_value1).unwrap();
-    assert_eq!(db.get(&binary_key1), Some(binary_value1.clone()));
+    assert_eq!(db.get(&binary_key1).unwrap(), Some(binary_value1.clone()));
 
     let key_with_nulls = b"key\0with\0nulls";
     let value_with_nulls = b"value\0with\0nulls";
 
     db.put(key_with_nulls, value_with_nulls).unwrap();
-    assert_eq!(db.get(key_with_nulls), Some(value_with_nulls.to_vec()));
+    assert_eq!(
+        db.get(key_with_nulls).unwrap(),
+        Some(value_with_nulls.to_vec())
+    );
 
     drop(db);
     cleanup_test_db("binary_data");
@@ -543,7 +571,7 @@ fn test_stress_concurrent_mixed_ops() {
 
     let final_state = expected_state.lock().unwrap();
     for (key, expected_value) in final_state.iter() {
-        let actual = db.get(key);
+        let actual = db.get(key).unwrap();
         assert_eq!(
             &actual,
             expected_value,

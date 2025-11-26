@@ -27,7 +27,7 @@ impl KeyLite {
     pub fn put(&self, key: &[u8], val: &[u8]) -> Result<()> {
         self.kv.put(key, val)
     }
-    pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         self.kv.get(key)
     }
     pub fn del(&self, key: &[u8]) -> Result<()> {
@@ -36,9 +36,14 @@ impl KeyLite {
 
     pub fn create_collection(&self, name: &str) -> Result<()> {
         let key = collection_meta_key(name);
-        if self.kv.get(&key).is_some() {
-            return Ok(());
-        };
+        match self.kv.get(&key) {
+            Ok(some) => {
+                if some.is_some() {
+                    return Ok(());
+                }
+            }
+            Err(e) => return Err(e),
+        }
 
         let meta = CollectionMeta {
             name: name.to_string(),
@@ -80,12 +85,16 @@ impl KeyLite {
 
     pub fn get_doc_by_id(&self, collection: &str, id: &str) -> Result<Option<Value>> {
         let key = doc_key(&collection, &id);
+
         Ok(match self.kv.get(&key) {
-            Some(bytes) => {
-                let v = rmp_serde::from_slice::<Value>(&bytes).unwrap();
-                Some(v)
-            }
-            None => None,
+            Ok(some) => match some {
+                Some(val) => {
+                    let v = rmp_serde::from_slice::<Value>(&val).unwrap();
+                    Some(v)
+                }
+                None => None,
+            },
+            Err(e) => return Err(e),
         })
     }
 

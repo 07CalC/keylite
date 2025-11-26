@@ -139,16 +139,21 @@ fn execute_command(db: &mut Option<(String, Db)>, line: &str) -> Result<CommandR
             }
 
             match db_ref.get(parts[1].as_bytes()) {
-                Some(value) => {
-                    match String::from_utf8(value.clone()) {
-                        Ok(s) => println!("{}", s),
-                        Err(_) => println!("(binary data)"),
+                Ok(val) => match val {
+                    Some(value) => {
+                        match String::from_utf8(value.clone()) {
+                            Ok(s) => println!("{}", s),
+                            Err(_) => println!("(binary data)"),
+                        }
+                        println!("({})", format_duration(start.elapsed()));
                     }
-                    println!("({})", format_duration(start.elapsed()));
-                }
-                None => {
-                    println!("(nil)");
-                    println!("({})", format_duration(start.elapsed()));
+                    None => {
+                        println!("(nil)");
+                        println!("({})", format_duration(start.elapsed()));
+                    }
+                },
+                Err(e) => {
+                    println!("Error: {:?}", e.to_string());
                 }
             }
         }

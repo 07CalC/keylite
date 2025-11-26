@@ -7,6 +7,7 @@ use std::thread::{self, JoinHandle};
 
 use crate::compaction::{compaction_worker, CompactionMessage};
 use crate::db::iterator::DbIterator;
+use crate::error::DbError;
 use crate::flush::{flush_memtable_to_disk, flush_worker, FlushMessage, FlushQueue};
 use crate::sst::SSTReader;
 use crate::storage::Memtable;
@@ -167,14 +168,14 @@ impl Db {
     // first we'll check the mutable memtable that's there for current writes
     // then check the 2 immutable memtable
     // if not found then fallback to SSTs
-    pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         //  mutable memtable
         let memtable = self.memtable.load();
         if let Some(val) = memtable.get(key) {
             if val.is_empty() {
-                return None;
+                return Ok(None);
             }
-            return Some(val);
+            return Ok(Some(val));
         }
 
         //  immutable memtables
@@ -182,9 +183,9 @@ impl Db {
         for mt in immutables.iter().rev() {
             if let Some(val) = mt.get(key) {
                 if val.is_empty() {
-                    return None;
+                    return Ok(None);
                 }
-                return Some(val);
+                return Ok(Some(val));
             }
         }
 
@@ -194,16 +195,16 @@ impl Db {
             match sst.get(key) {
                 Ok(Some(val)) => {
                     if val.is_empty() {
-                        return None;
+                        return Ok(None);
                     }
-                    return Some(val);
+                    return Ok(Some(val));
                 }
                 Ok(None) => continue,
-                Err(_) => continue,
+                Err(e) => return Err(DbError::SST(e)),
             }
         }
 
-        None
+        Ok(None)
     }
 
     // deletion is not on-spot, rather its like putting a tombstone (i.e. emtpy value) to that
