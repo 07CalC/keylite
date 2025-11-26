@@ -21,8 +21,6 @@ pub struct SSTIterator {
     block_idx: usize,
     current_block_data: Vec<u8>,
     current_block_pos: usize,
-    start_bound: Option<Vec<u8>>,
-    initialized: bool,
 }
 
 impl SSTIterator {
@@ -32,27 +30,6 @@ impl SSTIterator {
             block_idx: 0,
             current_block_data: Vec::new(),
             current_block_pos: 0,
-            start_bound: None,
-            initialized: false,
-        }
-    }
-
-    pub fn with_start_bound(mut self, start: Option<Vec<u8>>) -> Self {
-        self.start_bound = start;
-        self
-    }
-
-    fn seek_to_start(&mut self) {
-        if self.initialized || self.start_bound.is_none() {
-            return;
-        }
-        self.initialized = true;
-
-        let start = self.start_bound.as_ref().unwrap();
-        match self.reader.block_indexes.binary_search_by(|idx| idx.first_key.as_ref().cmp(start.as_slice())) {
-            Ok(idx) => self.block_idx = idx,
-            Err(0) => self.block_idx = 0,
-            Err(idx) => self.block_idx = idx - 1,
         }
     }
 
@@ -101,10 +78,6 @@ impl Iterator for SSTIterator {
     // returns the next kv pair from the sstable
     // used to get all the kv pairs from a particular sst
     fn next(&mut self) -> Option<Self::Item> {
-        if !self.initialized {
-            self.seek_to_start();
-        }
-
         loop {
             if self.current_block_pos >= self.current_block_data.len() {
                 match self.load_next_block() {

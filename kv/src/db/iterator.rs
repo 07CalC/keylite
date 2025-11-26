@@ -87,7 +87,7 @@ impl DbIterator {
         // collect the data stored in the mutable memtable
         // iter is implemented for memtable, see /storage/memtable.rs
         let mut memtable_data: Vec<(Vec<u8>, Vec<u8>)> = memtable.iter().collect();
-        memtable_data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        memtable_data.sort_by(|a, b| a.0.cmp(&b.0));
 
         // add the memtable source in sources
         sources.push(IterSource::Memtable {
@@ -100,7 +100,7 @@ impl DbIterator {
         for (i, imt) in immutable_memtable.iter().enumerate() {
             let priority = memtable_priority - 1 - i;
             let mut imt_data: Vec<(Vec<u8>, Vec<u8>)> = imt.iter().collect();
-            imt_data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            imt_data.sort_by(|a, b| a.0.cmp(&b.0));
 
             // add immutable_memtables to sources
             sources.push(IterSource::Memtable {
@@ -116,7 +116,7 @@ impl DbIterator {
             } else {
                 memtable_priority - i - 1
             };
-            let iter = SSTIterator::new(sst.clone()).with_start_bound(start_bound.clone());
+            let iter = SSTIterator::new(sst.clone());
             sources.push(IterSource::SST { iter, priority });
         }
 
@@ -157,22 +157,9 @@ impl DbIterator {
                     if *pos >= data.len() {
                         return None;
                     }
-
-                    if let Some(start) = start_bound {
-                        if *pos == 0 {
-                            match data.binary_search_by(|(k, _)| k.as_slice().cmp(start)) {
-                                Ok(idx) => *pos = idx,
-                                Err(idx) => *pos = idx,
-                            }
-                            if *pos >= data.len() {
-                                return None;
-                            }
-                        }
-                    }
-
-                    let (k, v) = &data[*pos];
+                    let (k, v) = data[*pos].clone();
                     *pos += 1;
-                    (k.clone(), v.clone(), *priority)
+                    (k, v, *priority)
                 }
                 IterSource::SST { iter, priority } => match iter.next()? {
                     Ok((k, v)) => (k, v, *priority),
@@ -239,19 +226,19 @@ impl Iterator for DbIterator {
             // if the entry's key is same as the last key, hence it's duplicate and one key with
             // same value has already been pushed into the Iterator, so we have to ignore it
             if let Some(ref last) = self.last_key {
-                if entry.key == *last {
+                if &entry.key == last {
                     continue;
                 }
             }
 
+            // change the last_key to the key we're about to return
+            self.last_key = Some(entry.key.clone());
+
             // value is emtpy hence it's tombstoned
             if entry.value.is_empty() {
-                self.last_key = Some(entry.key);
                 continue;
             }
 
-            // change the last_key to the key we're about to return
-            self.last_key = Some(entry.key.clone());
             return Some((entry.key, entry.value));
         }
     }
