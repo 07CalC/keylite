@@ -137,6 +137,8 @@ impl Db {
                         None
                     };
 
+                    // let remaining_count = new_immutables.len();
+
                     // swap the immutable memtables with new one
                     // the oldest one being replaced by a new emtpy one
                     let prev = self
@@ -146,7 +148,10 @@ impl Db {
                     // send the oldest immutable memtable to the flush queue
                     if Arc::ptr_eq(&*prev, &*current) {
                         if let Some(oldest) = oldest {
+                            // println!("[FLUSH] Sending immutable memtable to flush queue. Remaining immutable memtables in memory: {}", remaining_count);
                             let _ = self.flush_sender.send(FlushMessage::Flush(oldest));
+                        } else {
+                            // println!("[MEMTABLE] Created new immutable memtable. Total immutable memtables in memory: {}", remaining_count);
                         }
                         break;
                     }
@@ -244,6 +249,10 @@ impl Drop for Db {
 
         let immutable = self.immutable_memtables.load_full();
 
+        println!(
+            "[SHUTDOWN] Flushing {} immutable memtables to disk",
+            immutable.len()
+        );
         for mt in immutable.iter() {
             // flush all the immutable memtables to the disk
             if !mt.is_empty() {

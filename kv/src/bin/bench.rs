@@ -10,7 +10,7 @@ use std::{
 };
 
 const THREADS: usize = 1;
-const OPS_PER_THREAD: usize = 5_00_000;
+const OPS_PER_THREAD: usize = 1_000_000;
 
 const TOTAL_OPS: usize = THREADS * OPS_PER_THREAD;
 

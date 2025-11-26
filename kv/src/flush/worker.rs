@@ -24,8 +24,12 @@ pub fn flush_worker(
     loop {
         match receiver.recv() {
             Ok(FlushMessage::Flush(memtable)) => {
+                // println!("[FLUSH] Starting flush of immutable memtable ({} entries, {} bytes)",
+                //     memtable.len(), memtable.size_bytes());
                 if let Err(e) = flush_memtable_to_disk(&memtable, &dir, &sstables, &next_sst_id) {
                     eprintln!("Error flushing memtable: {}", e);
+                } else {
+                    // println!("[FLUSH] Completed flush of immutable memtable");
                 }
             }
             Ok(FlushMessage::Shutdown) | Err(_) => break,
@@ -50,7 +54,7 @@ pub fn flush_memtable_to_disk(
 
     // create new SSTWriter, implemented in /sst/writer.rs
     let mut writer = SSTWriter::new(&sst_path)?;
-    
+
     // iterate over memtable entries in sorted order (skipmap is already sorted)
     for (key, val) in memtable.iter() {
         // writer.add method adds the entry in the buffer
