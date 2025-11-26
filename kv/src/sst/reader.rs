@@ -1,19 +1,16 @@
 use crc32fast::Hasher;
 use memmap2::Mmap;
-use quick_cache::sync::Cache;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::{bloom::BloomFilter, BlockIndex, Footer, Result, SSTError, FOOTER_SIZE, MAGIC};
-use crate::db::config::BLOCK_CACHE_CAPACITY;
 
 pub struct SSTReader {
     path: PathBuf,
     pub(super) mmap: Mmap,
     pub(super) block_indexes: Arc<Vec<BlockIndex>>,
     bloom_filter: Arc<BloomFilter>,
-    pub(super) block_cache: Arc<Cache<u64, Arc<Vec<u8>>>>,
 }
 
 impl SSTReader {
@@ -44,7 +41,6 @@ impl SSTReader {
             mmap,
             block_indexes: Arc::new(block_indexes),
             bloom_filter: Arc::new(bloom_filter),
-            block_cache: Arc::new(Cache::new(BLOCK_CACHE_CAPACITY)),
         })
     }
 
@@ -125,9 +121,7 @@ impl SSTReader {
     }
 
     fn search_block(&self, offset: u64, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let block_data = if let Some(cached) = self.block_cache.get(&offset) {
-            cached
-        } else {
+        let block_data = {
             let mut pos = offset as usize;
 
             let block_len =
@@ -146,7 +140,7 @@ impl SSTReader {
 
             let block_vec = Arc::new(block_data.to_vec());
 
-            self.block_cache.insert(offset, Arc::clone(&block_vec));
+            // self.block_cache.insert(offset, Arc::clone(&block_vec));
 
             block_vec
         };
@@ -211,7 +205,6 @@ impl Clone for SSTReader {
                     mmap,
                     block_indexes: Arc::clone(&self.block_indexes),
                     bloom_filter: Arc::clone(&self.bloom_filter),
-                    block_cache: Arc::clone(&self.block_cache),
                 }
             }
         }
