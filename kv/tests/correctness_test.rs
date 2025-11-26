@@ -721,7 +721,7 @@ fn test_scan_empty_db() {
 fn test_scan_with_large_dataset() {
     let db = create_test_db("scan_large");
 
-    for i in 0..1000 {
+    for i in 0..100000 {
         let key = format!("key_{:05}", i);
         let value = format!("value_{}", i);
         db.put(key.as_bytes(), value.as_bytes()).unwrap();
