@@ -200,9 +200,9 @@ fn execute_command(db: &mut Option<(String, Db)>, line: &str) -> Result<CommandR
             };
 
             let start = Instant::now();
-            let results: Vec<_> = db_ref.scan(start_bound, end_bound).collect();
+            let iter = db_ref.scan(start_bound, end_bound);
 
-            for (key, value) in results.into_iter() {
+            for (key, value) in iter {
                 println!(
                     "key: {:?} value: {:?}",
                     String::from_utf8(key).unwrap_or_else(|_| "nil".to_string()),
