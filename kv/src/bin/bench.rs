@@ -10,12 +10,10 @@ use std::{
 };
 
 const THREADS: usize = 1;
-const OPS_PER_THREAD: usize = 150000;
+const OPS_PER_THREAD: usize = 5_00_000;
 
-// TOTAL ops for each category (write / read / delete)
 const TOTAL_OPS: usize = THREADS * OPS_PER_THREAD;
 
-// ----- LATENCY HELPERS -----
 fn record_latency(buf: &Arc<Vec<AtomicU64>>, index: &AtomicU64, nanos: u64) {
     let i = index.fetch_add(1, Ordering::Relaxed) as usize;
     if i >= buf.len() {
@@ -42,14 +40,42 @@ fn compute_percentiles(buf: &Arc<Vec<AtomicU64>>, count: usize) -> (u64, u64, u6
     (p50, p90, p99)
 }
 
+fn format_throughput(ops: usize, seconds: f64) -> String {
+    let ops_per_sec = ops as f64 / seconds;
+    if ops_per_sec >= 1_000_000.0 {
+        format!("{:.2} M ops/sec", ops_per_sec / 1_000_000.0)
+    } else if ops_per_sec >= 1_000.0 {
+        format!("{:.2} K ops/sec", ops_per_sec / 1_000.0)
+    } else {
+        format!("{:.2} ops/sec", ops_per_sec)
+    }
+}
+
+fn format_latency(nanos: u64) -> String {
+    if nanos >= 1_000_000_000 {
+        format!("{:.2} s", nanos as f64 / 1_000_000_000.0)
+    } else if nanos >= 1_000_000 {
+        format!("{:.2} ms", nanos as f64 / 1_000_000.0)
+    } else if nanos >= 1_000 {
+        format!("{:.2} µs", nanos as f64 / 1_000.0)
+    } else {
+        format!("{} ns", nanos)
+    }
+}
+
 // ----- MAIN -----
 fn main() {
-    println!("=== KeyLite 50-Thread / 15000 Ops Benchmark ===");
+    println!("\n╔══════════════════════════════════════════════════════════╗");
+    println!("║          KeyLite KV Store Benchmark Suite                ║");
+    println!("╚══════════════════════════════════════════════════════════╝\n");
+    println!("Configuration:");
+    println!("  Threads:         {}", THREADS);
+    println!("  Ops per thread:  {}", OPS_PER_THREAD);
+    println!("  Total ops:       {} (per operation type)\n", TOTAL_OPS);
 
     let _ = std::fs::remove_dir_all("bench_db");
     let db = Arc::new(Db::open("bench_db").unwrap());
 
-    // Separate latency storage
     let write_lat = Arc::new(
         (0..TOTAL_OPS)
             .map(|_| AtomicU64::new(0))
@@ -90,17 +116,14 @@ fn main() {
                 let key = format!("key_{}_{}", id, rng.random::<u64>());
                 let val = format!("val_{}", rng.random::<u64>());
 
-                // write
                 let t0 = Instant::now();
                 db.put(key.as_bytes(), val.as_bytes()).unwrap();
                 record_latency(&write_lat, &write_idx, t0.elapsed().as_nanos() as u64);
 
-                // read
                 let t0 = Instant::now();
                 let _ = db.get(key.as_bytes());
                 record_latency(&read_lat, &read_idx, t0.elapsed().as_nanos() as u64);
 
-                // delete
                 let t0 = Instant::now();
                 let _ = db.del(key.as_bytes());
                 record_latency(&del_lat, &del_idx, t0.elapsed().as_nanos() as u64);
@@ -123,33 +146,81 @@ fn main() {
     let (r50, r90, r99) = compute_percentiles(&read_lat, reads_done);
     let (d50, d90, d99) = compute_percentiles(&del_lat, dels_done);
 
-    println!("\n=== RESULTS ===");
-    println!("Total time: {:?}", total_time);
+    let seconds = total_time.as_secs_f64();
+
+    println!("\n╔══════════════════════════════════════════════════════════╗");
+    println!("║                    BENCHMARK RESULTS                     ║");
+    println!("╚══════════════════════════════════════════════════════════╝\n");
+    println!("Total execution time: {:.2} seconds\n", seconds);
+
+    // ===== THROUGHPUT =====
+    println!("┌─────────────────────────────────────────────────────────┐");
+    println!("│                       THROUGHPUT                        │");
+    println!("├─────────────────────────────────────────────────────────┤");
+
+    let write_throughput = format_throughput(writes_done, seconds);
+    let read_throughput = format_throughput(reads_done, seconds);
+    let delete_throughput = format_throughput(dels_done, seconds);
 
     println!(
-        "\nWrites:  {} ops  ({:.2} ops/sec)",
-        writes_done,
-        writes_done as f64 / total_time.as_secs_f64()
+        "│  Write:   {:>8} ops  │  {:>20} │",
+        writes_done, write_throughput
     );
     println!(
-        "Reads:   {} ops  ({:.2} ops/sec)",
-        reads_done,
-        reads_done as f64 / total_time.as_secs_f64()
+        "│  Read:    {:>8} ops  │  {:>20} │",
+        reads_done, read_throughput
     );
     println!(
-        "Deletes: {} ops  ({:.2} ops/sec)",
-        dels_done,
-        dels_done as f64 / total_time.as_secs_f64()
+        "│  Delete:  {:>8} ops  │  {:>20} │",
+        dels_done, delete_throughput
     );
+    println!("└─────────────────────────────────────────────────────────┘\n");
 
-    println!("\n--- Write Latency (ns) ---");
-    println!("p50: {},  p90: {},  p99: {}", w50, w90, w99);
+    // ===== LATENCY PERCENTILES =====
+    println!("┌─────────────────────────────────────────────────────────┐");
+    println!("│                   LATENCY PERCENTILES                   │");
+    println!("├──────────┬──────────────┬──────────────┬────────────────┤");
+    println!("│ Operation│     p50      │     p90      │      p99       │");
+    println!("├──────────┼──────────────┼──────────────┼────────────────┤");
+    println!(
+        "│  Write   │ {:>12} │ {:>12} │ {:>13} │",
+        format_latency(w50),
+        format_latency(w90),
+        format_latency(w99)
+    );
+    println!(
+        "│  Read    │ {:>12} │ {:>12} │ {:>13} │",
+        format_latency(r50),
+        format_latency(r90),
+        format_latency(r99)
+    );
+    println!(
+        "│  Delete  │ {:>12} │ {:>12} │ {:>13} │",
+        format_latency(d50),
+        format_latency(d90),
+        format_latency(d99)
+    );
+    println!("└──────────┴──────────────┴──────────────┴───────────────┘\n");
 
-    println!("\n--- Read Latency (ns) ---");
-    println!("p50: {},  p90: {},  p99: {}", r50, r90, r99);
+    let total_ops = writes_done + reads_done + dels_done;
+    let overall_throughput = format_throughput(total_ops, seconds);
 
-    println!("\n--- Delete Latency (ns) ---");
-    println!("p50: {},  p90: {},  p99: {}", d50, d90, d99);
+    println!("┌─────────────────────────────────────────────────────────┐");
+    println!("│                      SUMMARY                            │");
+    println!("├─────────────────────────────────────────────────────────┤");
+    println!(
+        "│  Total operations:    {:>8}                         │",
+        total_ops
+    );
+    println!(
+        "│  Overall throughput:  {:>20}                 │",
+        overall_throughput
+    );
+    println!(
+        "│  Average op latency:  {:>12}                     │",
+        format_latency((total_time.as_nanos() as u64) / (total_ops as u64))
+    );
+    println!("└─────────────────────────────────────────────────────────┘\n");
 
-    println!("\n=== Benchmark Complete ===");
+    println!("✓ Benchmark complete!\n");
 }

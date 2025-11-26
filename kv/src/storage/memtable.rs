@@ -1,17 +1,17 @@
-use dashmap::DashMap;
+use crossbeam_skiplist::SkipMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// look up heirerchy:
 /// memtable -> immutable memtable -> sst
 pub struct Memtable {
-    data: DashMap<Vec<u8>, Vec<u8>>,
+    data: SkipMap<Vec<u8>, Vec<u8>>,
     size_bytes: AtomicUsize,
 }
 
 impl Memtable {
     pub fn new() -> Self {
         Self {
-            data: DashMap::new(),
+            data: SkipMap::new(),
             size_bytes: AtomicUsize::new(0),
         }
     }
@@ -20,8 +20,8 @@ impl Memtable {
         let key_size = key.len();
         let val_size = value.len();
 
-        if let Some(old_val) = self.data.get(&key) {
-            self.size_bytes.fetch_sub(old_val.len(), Ordering::Relaxed);
+        if let Some(old_entry) = self.data.get(&key) {
+            self.size_bytes.fetch_sub(old_entry.value().len(), Ordering::Relaxed);
         } else {
             self.size_bytes.fetch_add(key_size, Ordering::Relaxed);
         }
@@ -31,7 +31,7 @@ impl Memtable {
     }
 
     pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.data.get(key).map(|v| v.value().clone())
+        self.data.get(key).map(|entry| entry.value().clone())
     }
 
     pub fn size_bytes(&self) -> usize {
@@ -46,7 +46,7 @@ impl Memtable {
         self.data.is_empty()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + use<'_> {
+    pub fn iter(&self) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_ {
         self.data
             .iter()
             .map(|entry| (entry.key().clone(), entry.value().clone()))

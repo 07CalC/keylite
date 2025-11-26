@@ -48,13 +48,11 @@ pub fn flush_memtable_to_disk(
     let sst_id = next_sst_id.fetch_add(1, Ordering::Relaxed);
     let sst_path = dir.join(format!("sst-{}.db", sst_id));
 
-    // get all the entries that memtable has
-    let mut entries: Vec<(Vec<u8>, Vec<u8>)> = memtable.iter().collect();
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
-
     // create new SSTWriter, implemented in /sst/writer.rs
     let mut writer = SSTWriter::new(&sst_path)?;
-    for (key, val) in entries {
+    
+    // iterate over memtable entries in sorted order (skipmap is already sorted)
+    for (key, val) in memtable.iter() {
         // writer.add method adds the entry in the buffer
         writer.add(&key, &val)?;
     }

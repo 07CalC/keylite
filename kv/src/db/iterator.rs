@@ -86,8 +86,8 @@ impl DbIterator {
 
         // collect the data stored in the mutable memtable
         // iter is implemented for memtable, see /storage/memtable.rs
-        let mut memtable_data: Vec<(Vec<u8>, Vec<u8>)> = memtable.iter().collect();
-        memtable_data.sort_by(|a, b| a.0.cmp(&b.0));
+        // skipmap iterator is already sorted, no need to sort again
+        let memtable_data: Vec<(Vec<u8>, Vec<u8>)> = memtable.iter().collect();
 
         // add the memtable source in sources
         sources.push(IterSource::Memtable {
@@ -99,8 +99,8 @@ impl DbIterator {
         // collect the data stored in the immutable memtable(s)
         for (i, imt) in immutable_memtable.iter().enumerate() {
             let priority = memtable_priority - 1 - i;
-            let mut imt_data: Vec<(Vec<u8>, Vec<u8>)> = imt.iter().collect();
-            imt_data.sort_by(|a, b| a.0.cmp(&b.0));
+            // skipmap iterator is already sorted, no need to sort again
+            let imt_data: Vec<(Vec<u8>, Vec<u8>)> = imt.iter().collect();
 
             // add immutable_memtables to sources
             sources.push(IterSource::Memtable {
