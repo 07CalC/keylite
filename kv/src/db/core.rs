@@ -121,6 +121,63 @@ impl Db {
         let seq = self.global_sequence.fetch_add(1, Ordering::SeqCst);
         memtable.put(key.to_vec(), val.to_vec(), seq);
 
+        // flush if needed
+        self.flush_if_needed();
+
+        Ok(())
+    }
+
+    // first we'll check the mutable memtable that's there for current writes
+    // then check the 2 immutable memtable
+    // if not found then fallback to SSTs
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        //  mutable memtable
+        let memtable = self.memtable.load();
+        if let Some(val) = memtable.get(key) {
+            if val.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(val));
+        }
+
+        //  immutable memtables
+        let immutables = self.immutable_memtables.load();
+        for mt in immutables.iter().rev() {
+            if let Some(val) = mt.get(key) {
+                if val.is_empty() {
+                    return Ok(None);
+                }
+                return Ok(Some(val));
+            }
+        }
+
+        //  sstables
+        let sstables = self.sstables.load();
+        for sst in sstables.iter() {
+            match sst.get(key) {
+                Ok(Some(val)) => {
+                    if val.is_empty() {
+                        return Ok(None);
+                    }
+                    return Ok(Some(val));
+                }
+                Ok(None) => continue,
+                Err(e) => return Err(DbError::SST(e)),
+            }
+        }
+
+        Ok(None)
+    }
+
+    // deletion is not on spot, rather its like putting a tombstone (i.e. emtpy value) to that
+    // particular key, after compaction the old entries with some value are removed, also the
+    // emtpy value entry is also removed
+    pub fn del(&self, key: &[u8]) -> Result<()> {
+        self.put(key, &[])
+    }
+
+    pub fn flush_if_needed(&self) {
+        let memtable = self.memtable.load();
         // memtables are configured to be of a certain max size to cap the memory usage after that
         // limit is reached the memtables should be freezed and pushed to the flush queue which
         // will then write the memtable to sst file
@@ -176,62 +233,8 @@ impl Db {
                 let _ = self.compaction_sender.send(CompactionMessage::Compact);
             }
         }
-
-        Ok(())
     }
 
-    // first we'll check the mutable memtable that's there for current writes
-    // then check the 2 immutable memtable
-    // if not found then fallback to SSTs
-    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        //  mutable memtable
-        let memtable = self.memtable.load();
-        if let Some(val) = memtable.get(key) {
-            if val.is_empty() {
-                return Ok(None);
-            }
-            return Ok(Some(val));
-        }
-
-        //  immutable memtables
-        let immutables = self.immutable_memtables.load();
-        for mt in immutables.iter().rev() {
-            if let Some(val) = mt.get(key) {
-                if val.is_empty() {
-                    return Ok(None);
-                }
-                return Ok(Some(val));
-            }
-        }
-
-        //  sstables
-        let sstables = self.sstables.load();
-        for sst in sstables.iter() {
-            match sst.get(key) {
-                Ok(Some(val)) => {
-                    if val.is_empty() {
-                        return Ok(None);
-                    }
-                    return Ok(Some(val));
-                }
-                Ok(None) => continue,
-                Err(e) => return Err(DbError::SST(e)),
-            }
-        }
-
-        Ok(None)
-    }
-
-    // deletion is not on spot, rather its like putting a tombstone (i.e. emtpy value) to that
-    // particular key, after compaction the old entries with some value are removed, also the
-    // emtpy value entry is also removed
-    pub fn del(&self, key: &[u8]) -> Result<()> {
-        self.put(key, &[])
-    }
-
-    //TODO: performance can be enhanced for empty scans
-    // i.e. i scanned from ff:11 to ff::66 but when ff:11 to ff::66 nothing exists it takes too
-    // much time
     pub fn scan(&self, start: Option<&[u8]>, end: Option<&[u8]>) -> DbIterator {
         let memtable = Arc::clone(&self.memtable.load());
         let immutables = (**self.immutable_memtables.load()).clone();
