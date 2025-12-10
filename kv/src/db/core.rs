@@ -2,7 +2,7 @@ use arc_swap::ArcSwap;
 use std::fs::read_dir;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use crate::compaction::{compaction_worker, CompactionMessage};
@@ -11,6 +11,8 @@ use crate::error::DbError;
 use crate::flush::{flush_memtable_to_disk, flush_worker, FlushMessage, FlushQueue};
 use crate::sst::SSTReader;
 use crate::storage::Memtable;
+use crate::wal::reader::WalReader;
+use crate::wal::writer::WalWriter;
 use crossbeam_channel::Sender;
 
 use super::config::{MAX_SSTABLES, MEMTABLE_SIZE_THRESHOLD};
@@ -27,6 +29,7 @@ pub struct Db {
     flush_thread: Option<JoinHandle<()>>,
     compaction_thread: Option<JoinHandle<()>>,
     global_sequence: Arc<AtomicU64>,
+    wal: Arc<Mutex<WalWriter>>,
 }
 
 impl Db {
@@ -35,6 +38,7 @@ impl Db {
         std::fs::create_dir_all(&dir)?;
 
         let mut sst_ids = Vec::new();
+        let mut has_wal = false;
         for entry in read_dir(&dir)? {
             let e = entry?;
             let name = e.file_name().into_string().unwrap_or_default();
@@ -45,6 +49,9 @@ impl Db {
                 if let Ok(id) = s.parse::<u64>() {
                     sst_ids.push(id);
                 }
+            }
+            if let Some(_) = name.strip_prefix("wal") {
+                has_wal = true;
             }
         }
 
@@ -90,16 +97,30 @@ impl Db {
             )
         });
         let mut max_seq = 0;
+        let memtable = Memtable::new();
 
         for sst in sstables.load().iter() {
             max_seq = max_seq.max(sst.max_sequence());
         }
 
+        if has_wal {
+            let mut wal_reader = WalReader::new(dir.join("wal.log")).unwrap();
+            while let Some(record) = wal_reader.next()? {
+                max_seq = max_seq.max(record.seq);
+                memtable.put(record.key, record.val, record.seq);
+                if memtable.size_bytes() >= MEMTABLE_SIZE_THRESHOLD {
+                    flush_memtable_to_disk(&memtable, &dir, &sstables, &next_sst_id)?;
+                    memtable.clear();
+                }
+            }
+        }
+
         let global_sequence = Arc::new(AtomicU64::new(max_seq + 1));
+        let wal = Arc::new(Mutex::new(WalWriter::new(dir.join("wal.log")).unwrap()));
 
         Ok(Self {
             dir,
-            memtable: Arc::new(ArcSwap::from_pointee(Memtable::new())),
+            memtable: Arc::new(ArcSwap::from_pointee(memtable)),
             immutable_memtables: Arc::new(ArcSwap::from_pointee(Vec::new())),
             sstables,
             next_sst_id,
@@ -108,6 +129,7 @@ impl Db {
             flush_thread: Some(flush_thread),
             compaction_thread: Some(compaction_thread),
             global_sequence,
+            wal,
         })
     }
 
@@ -117,8 +139,14 @@ impl Db {
     // at any time 1 mutable memtable and 2 immutable memtables are allowed, if immutable memtables
     // crosses 2 then the oldest one gets flushed in the SST file
     pub fn put(&self, key: &[u8], val: &[u8]) -> Result<()> {
-        let memtable = self.memtable.load();
         let seq = self.global_sequence.fetch_add(1, Ordering::SeqCst);
+
+        {
+            let mut wal = self.wal.lock().unwrap();
+            wal.append(key, val, seq)?;
+        }
+
+        let memtable = self.memtable.load();
         memtable.put(key.to_vec(), val.to_vec(), seq);
 
         // flush if needed

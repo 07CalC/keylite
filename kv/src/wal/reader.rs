@@ -1,5 +1,5 @@
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io::{BufReader, Read, Result},
     path::Path,
 };
@@ -7,9 +7,9 @@ use std::{
 use crc32fast::Hasher;
 
 pub struct WalEntry {
-    seq: u64,
-    key: Vec<u8>,
-    val: Vec<u8>,
+    pub seq: u64,
+    pub key: Vec<u8>,
+    pub val: Vec<u8>,
 }
 
 pub struct WalReader {
