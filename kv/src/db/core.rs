@@ -1,7 +1,7 @@
 use arc_swap::ArcSwap;
 use std::fs::read_dir;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
@@ -26,6 +26,7 @@ pub struct Db {
     compaction_sender: Sender<CompactionMessage>,
     flush_thread: Option<JoinHandle<()>>,
     compaction_thread: Option<JoinHandle<()>>,
+    global_sequence: Arc<AtomicU64>,
 }
 
 impl Db {
@@ -88,6 +89,13 @@ impl Db {
                 compaction_next_id,
             )
         });
+        let mut max_seq = 0;
+
+        for sst in sstables.load().iter() {
+            max_seq = max_seq.max(sst.max_sequence());
+        }
+
+        let global_sequence = Arc::new(AtomicU64::new(max_seq + 1));
 
         Ok(Self {
             dir,
@@ -99,6 +107,7 @@ impl Db {
             compaction_sender,
             flush_thread: Some(flush_thread),
             compaction_thread: Some(compaction_thread),
+            global_sequence,
         })
     }
 
@@ -109,7 +118,8 @@ impl Db {
     // crosses 2 then the oldest one gets flushed in the SST file
     pub fn put(&self, key: &[u8], val: &[u8]) -> Result<()> {
         let memtable = self.memtable.load();
-        memtable.put(key.to_vec(), val.to_vec());
+        let seq = self.global_sequence.fetch_add(1, Ordering::SeqCst);
+        memtable.put(key.to_vec(), val.to_vec(), seq);
 
         // memtables are configured to be of a certain max size to cap the memory usage after that
         // limit is reached the memtables should be freezed and pushed to the flush queue which
@@ -212,7 +222,7 @@ impl Db {
         Ok(None)
     }
 
-    // deletion is not on-spot, rather its like putting a tombstone (i.e. emtpy value) to that
+    // deletion is not on spot, rather its like putting a tombstone (i.e. emtpy value) to that
     // particular key, after compaction the old entries with some value are removed, also the
     // emtpy value entry is also removed
     pub fn del(&self, key: &[u8]) -> Result<()> {
@@ -249,10 +259,6 @@ impl Drop for Db {
 
         let immutable = self.immutable_memtables.load_full();
 
-        println!(
-            "[SHUTDOWN] Flushing {} immutable memtables to disk",
-            immutable.len()
-        );
         for mt in immutable.iter() {
             // flush all the immutable memtables to the disk
             if !mt.is_empty() {

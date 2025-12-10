@@ -4,14 +4,16 @@
 //
 use crate::{
     sst::{SSTIterator, SSTReader},
-    storage::Memtable,
+    storage::{memtable::VersionedKey, Memtable},
 };
 use std::{cmp::Ordering, collections::BinaryHeap, sync::Arc};
+
 #[derive(Clone, Debug)]
 pub struct IterEntry {
     key: Vec<u8>,
     value: Vec<u8>,
-    priority: usize,
+    seq: u64,        // <-- added sequence number
+    priority: usize, // determines source order (mem → immut → sst)
 }
 
 // custom cmp implementation to give the reverse ordering
@@ -19,8 +21,15 @@ pub struct IterEntry {
 // which is the default implementation of the BinaryHeap
 impl std::cmp::Ord for IterEntry {
     fn cmp(&self, other: &Self) -> Ordering {
+        // FIRST: smallest user-key wins in heap
         match other.key.cmp(&self.key) {
-            Ordering::Equal => self.priority.cmp(&other.priority),
+            Ordering::Equal => {
+                // SECOND: newer seq wins among equal keys
+                match self.seq.cmp(&other.seq) {
+                    Ordering::Equal => self.priority.cmp(&other.priority),
+                    ord => ord,
+                }
+            }
             ord => ord,
         }
     }
@@ -34,7 +43,7 @@ impl std::cmp::PartialOrd for IterEntry {
 
 impl std::cmp::PartialEq for IterEntry {
     fn eq(&self, other: &Self) -> bool {
-        self.key == other.key
+        self.key == other.key && self.seq == other.seq
     }
 }
 
@@ -50,7 +59,7 @@ impl std::cmp::Eq for IterEntry {}
 // least priority will be given to SST -> newest will have more than oldest
 enum IterSource {
     Memtable {
-        data: Vec<(Vec<u8>, Vec<u8>)>,
+        data: Vec<(VersionedKey, Vec<u8>)>,
         pos: usize,
         priority: usize,
     },
@@ -87,7 +96,7 @@ impl DbIterator {
         // collect the data stored in the mutable memtable
         // iter is implemented for memtable, see /storage/memtable.rs
         // skipmap iterator is already sorted, no need to sort again
-        let memtable_data: Vec<(Vec<u8>, Vec<u8>)> = memtable.iter().collect();
+        let memtable_data: Vec<(VersionedKey, Vec<u8>)> = memtable.iter().collect();
 
         // add the memtable source in sources
         sources.push(IterSource::Memtable {
@@ -99,8 +108,8 @@ impl DbIterator {
         // collect the data stored in the immutable memtable(s)
         for (i, imt) in immutable_memtable.iter().enumerate() {
             let priority = memtable_priority - 1 - i;
-            // skipmap iterator is already sorted, no need to sort again
-            let imt_data: Vec<(Vec<u8>, Vec<u8>)> = imt.iter().collect();
+
+            let imt_data: Vec<(VersionedKey, Vec<u8>)> = imt.iter().collect();
 
             // add immutable_memtables to sources
             sources.push(IterSource::Memtable {
@@ -120,9 +129,8 @@ impl DbIterator {
             sources.push(IterSource::SST { iter, priority });
         }
 
+        // preload one entry from each source
         for i in 0..sources.len() {
-            // put one entry from each source into the heap for k-based merge and advance that
-            // source
             if let Some(entry) = Self::advance_source(&mut sources, i, &start_bound, &end_bound) {
                 heap.push(entry);
             }
@@ -144,49 +152,42 @@ impl DbIterator {
         end_bound: &Option<Vec<u8>>,
     ) -> Option<IterEntry> {
         loop {
-            // get the key, value, priority if the IterSource is Memtable, because an iterator
-            // is not implemented for memtables
-            let (key, value, priority) = match &mut sources[source_idx] {
+            let (key, value, seq, priority) = match &mut sources[source_idx] {
                 IterSource::Memtable {
                     data,
                     pos,
                     priority,
                 } => {
-                    // if pos is greater than the data's length hence we've reached the end of data
-                    // present in that particular source
                     if *pos >= data.len() {
                         return None;
                     }
-                    let (k, v) = data[*pos].clone();
+                    let (vk, v) = data[*pos].clone();
                     *pos += 1;
-                    (k, v, *priority)
+
+                    (vk.key, v, vk.seq, *priority)
                 }
                 IterSource::SST { iter, priority } => match iter.next()? {
-                    Ok((k, v)) => (k, v, *priority),
+                    Ok((k, v, seq)) => (k, v, seq, *priority),
                     Err(_) => return None,
                 },
             };
 
-            // if key is less that start that means we don't need that entry and we need something
-            // higher than that
             if let Some(start) = start_bound {
                 if &key < start {
                     continue;
                 }
             }
 
-            // similarly if the key is more than or equal to the end bound means we don't need that entry we
-            // need something lower that that, and since we've already reached to a point where key
-            // is greater than or equal to the end bound means we won't be getting anything of our use after
-            // that (end bound is exclusive)
             if let Some(end) = end_bound {
                 if &key >= end {
                     return None;
                 }
             }
+
             return Some(IterEntry {
                 key,
                 value,
+                seq,
                 priority,
             });
         }
@@ -199,7 +200,6 @@ impl Iterator for DbIterator {
     // the next implementation for the DbIterator
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            // take one entry from the heap (i.e. the smallest one)
             let entry = self.heap.pop()?;
 
             // advance the source that produced this entry
@@ -209,7 +209,6 @@ impl Iterator for DbIterator {
                     IterSource::SST { priority, .. } => *priority,
                 };
 
-                // if we get the source where we got the source from we adnvace that source
                 if source_priority == entry.priority {
                     if let Some(next_entry) = Self::advance_source(
                         &mut self.sources,
@@ -223,8 +222,8 @@ impl Iterator for DbIterator {
                 }
             }
 
-            // if the entry's key is same as the last key, hence it's duplicate and one key with
-            // same value has already been pushed into the Iterator, so we have to ignore it
+            // if the entry's key is same as the last key, hence it's duplicate
+            // and one key with same value has already been pushed into the Iterator
             if let Some(ref last) = self.last_key {
                 if &entry.key == last {
                     continue;
@@ -234,7 +233,7 @@ impl Iterator for DbIterator {
             // change the last_key to the key we're about to return
             self.last_key = Some(entry.key.clone());
 
-            // value is emtpy hence it's tombstoned
+            // value is empty hence it's tombstoned
             if entry.value.is_empty() {
                 continue;
             }

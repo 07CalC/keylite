@@ -11,6 +11,7 @@ pub struct SSTReader {
     pub(super) mmap: Mmap,
     pub(super) block_indexes: Arc<Vec<BlockIndex>>,
     bloom_filter: Arc<BloomFilter>,
+    max_sequence: u64,
 }
 
 impl SSTReader {
@@ -19,12 +20,7 @@ impl SSTReader {
         let file = File::open(&path)?;
         let mmap = unsafe { Mmap::map(&file)? };
 
-        // read footer from end of file
-        // footer is of fixed size always
-        // if size doesn't match means that SST is corrupted
-        // even in the case where sst file is empty there must be footer present there
-        // so if mmap.len() < FOOTER_SIZE hence the file is corrupted
-        // TODO: what to do with corrupted SSTs?
+        // sanity check: file must at least contain a footer
         if mmap.len() < FOOTER_SIZE {
             return Err(SSTError::Corrupt);
         }
@@ -33,18 +29,28 @@ impl SSTReader {
         let footer = Self::parse_footer(footer_bytes)?;
 
         let block_indexes = Self::read_index_block(&mmap, footer.index_offset)?;
-
         let bloom_filter = super::bloom::read_bloom_filter(&mmap, footer.bloom_offset)?;
+        let max_sequence = footer.max_sequence;
 
         Ok(Self {
             path,
             mmap,
             block_indexes: Arc::new(block_indexes),
             bloom_filter: Arc::new(bloom_filter),
+            max_sequence,
         })
     }
 
     fn parse_footer(bytes: &[u8]) -> Result<Footer> {
+        // footer layout (must match writer):
+        // 0..8    magic (u64) = "KEYLT"
+        // 8..12   version (u32)
+        // 12..20  index_offset (u64)
+        // 20..28  bloom_offset (u64)
+        // 28..36  num_entries (u64)
+        // 36..44  max_sequence (u64)
+        debug_assert!(bytes.len() == FOOTER_SIZE);
+
         let magic = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
         if magic != MAGIC {
             return Err(SSTError::InvalidMagic);
@@ -54,6 +60,7 @@ impl SSTReader {
         let index_offset = u64::from_le_bytes(bytes[12..20].try_into().unwrap());
         let bloom_offset = u64::from_le_bytes(bytes[20..28].try_into().unwrap());
         let num_entries = u64::from_le_bytes(bytes[28..36].try_into().unwrap());
+        let max_sequence = u64::from_le_bytes(bytes[36..44].try_into().unwrap());
 
         Ok(Footer {
             magic,
@@ -61,12 +68,15 @@ impl SSTReader {
             index_offset,
             bloom_offset,
             num_entries,
+            max_sequence,
         })
     }
 
     fn read_index_block(mmap: &Mmap, offset: u64) -> Result<Vec<BlockIndex>> {
         let mut pos = offset as usize;
 
+        // index block is stored as:
+        // [block_len: u32][block_data...][crc32: u32]
         let block_len = u32::from_le_bytes(mmap[pos..pos + 4].try_into().unwrap()) as usize;
         pos += 4;
 
@@ -80,6 +90,12 @@ impl SSTReader {
             return Err(SSTError::Corrupt);
         }
 
+        // Index block format:
+        // num_entries (u32)
+        // repeated:
+        //   key_len (u16)
+        //   offset (u64)
+        //   first_key bytes
         let mut indexes = Vec::new();
         let num_entries = u32::from_le_bytes(block_data[0..4].try_into().unwrap()) as usize;
         let mut idx = 4;
@@ -103,11 +119,14 @@ impl SSTReader {
         Ok(indexes)
     }
 
+    /// simple point lookup (no version merging yet).
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        // fast negative path via bloom filter
         if !self.bloom_filter.might_contain(key) {
             return Ok(None);
         }
 
+        // find the block whose first_key <= key
         let block_idx = match self
             .block_indexes
             .binary_search_by(|idx| idx.first_key.as_ref().cmp(key))
@@ -117,10 +136,49 @@ impl SSTReader {
             Err(i) => i - 1,
         };
 
-        self.search_block(self.block_indexes[block_idx].offset, key)
+        // IMPORTANT: Because block boundaries are determined by size (not by key changes),
+        // entries for the same key with different sequence numbers can span multiple blocks.
+        // The entry with the highest sequence number will appear first in the file.
+        //
+        // Simple solution: Check the found block and the previous block (if it exists).
+        // This handles the common case where a key's versions span at most 2 blocks.
+
+        let start_idx = if block_idx > 0 { block_idx - 1 } else { 0 };
+
+        // Search from start_idx to block_idx, returning the FIRST result found.
+        // IMPORTANT: If we find a tombstone (Ok(None)), we must return it immediately,
+        // not continue searching, because the tombstone has the highest sequence number
+        // and represents the most recent state of the key.
+        for idx in start_idx..=block_idx {
+            match self.search_block(self.block_indexes[idx].offset, key) {
+                Ok(val) => {
+                    // Found the key (either with a value or as a tombstone)
+                    return Ok(val);
+                }
+                Err(super::SSTError::NotFound) => {
+                    // Key not in this block, continue to next block
+                    continue;
+                }
+                Err(e) => {
+                    // Other error
+                    return Err(e);
+                }
+            }
+        }
+
+        Ok(None)
     }
 
+    /// Search for a key within a specific block.
+    ///
+    /// Returns:
+    /// - `Ok(Some(val))` if key found with a non-empty value
+    /// - `Ok(None)` if key found with empty value (tombstone/deleted)
+    /// - `Err(SSTError::NotFound)` if key not in this block
+    /// - `Err(other)` for other errors
     fn search_block(&self, offset: u64, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        // read and verify block at given offset:
+        // [block_len: u32][block_data...][crc32: u32]
         let block_data = {
             let mut pos = offset as usize;
 
@@ -138,18 +196,32 @@ impl SSTReader {
                 return Err(SSTError::Corrupt);
             }
 
-            let block_vec = Arc::new(block_data.to_vec());
-
-            // self.block_cache.insert(offset, Arc::clone(&block_vec));
-
-            block_vec
+            Arc::new(block_data.to_vec())
         };
 
-        let mut entries = Vec::new();
-        let mut idx = 0;
+        // entry format in block_data (must match writer) :
+        // key_len (u16)
+        // val_len (u32)
+        // key [key_len]
+        // seq (u64)
+        // value [val_len]
 
-        while idx < block_data.len() {
-            if idx + 6 > block_data.len() {
+        #[derive(Debug)]
+        struct EntryMeta {
+            key_start: usize,
+            key_len: usize,
+            val_start: usize,
+            val_len: usize,
+            seq: u64,
+        }
+
+        let mut entries: Vec<EntryMeta> = Vec::new();
+        let mut idx = 0;
+        let len = block_data.len();
+
+        while idx < len {
+            // need at least key_len + val_len
+            if idx + 6 > len {
                 break;
             }
 
@@ -159,54 +231,91 @@ impl SSTReader {
             let val_len = u32::from_le_bytes(block_data[idx..idx + 4].try_into().unwrap()) as usize;
             idx += 4;
 
-            if idx + key_len + val_len > block_data.len() {
+            // now we need: key_len + 8(seq) + val_len bytes
+            if idx + key_len + 8 + val_len > len {
                 break;
             }
 
-            let entry_key = &block_data[idx..idx + key_len];
-            let entry_key_start = idx;
+            let key_start = idx;
             idx += key_len;
 
-            let entry_val_start = idx;
+            // nead seq but we don't use it yet in get()
+            let seq = u64::from_le_bytes(block_data[idx..idx + 8].try_into().unwrap());
+            idx += 8;
+
+            let val_start = idx;
             idx += val_len;
 
-            entries.push((entry_key, entry_key_start, entry_val_start, val_len));
+            entries.push(EntryMeta {
+                key_start,
+                key_len,
+                val_start,
+                val_len,
+                seq,
+            });
         }
 
-        match entries.binary_search_by(|(entry_key, _, _, _)| entry_key.cmp(&key)) {
-            Ok(pos) => {
-                let (_, _, val_start, val_len) = entries[pos];
-                let entry_val = &block_data[val_start..val_start + val_len];
+        // binary search over keys inside the block, then find the entry with highest seq
+        match entries.binary_search_by(|entry| {
+            let entry_key = &block_data[entry.key_start..entry.key_start + entry.key_len];
+            entry_key.cmp(key)
+        }) {
+            Ok(mut pos) => {
+                // found a match, but there might be multiple entries for the same key
+                // with different sequence numbers within this block, find the one with the
+                // highest sequence number
+                // entries are sorted by key first, then by sequence (descending), so we need
+                // to find the first occurrence of this key (which has the highest seq).
 
+                // Move backward to find the first occurrence of this key
+                while pos > 0 {
+                    let prev_entry = &entries[pos - 1];
+                    let prev_key = &block_data
+                        [prev_entry.key_start..prev_entry.key_start + prev_entry.key_len];
+                    if prev_key == key {
+                        pos -= 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                // Now pos points to the first occurrence, which has the highest sequence number
+                let entry = &entries[pos];
+                let entry_val = &block_data[entry.val_start..entry.val_start + entry.val_len];
+
+                // tombstone: empty value represents deletion
                 if entry_val.is_empty() {
                     return Ok(None);
                 }
+
                 Ok(Some(entry_val.to_vec()))
             }
-            Err(_) => Ok(None),
+            Err(_) => Err(super::SSTError::NotFound),
         }
     }
 
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    pub fn max_sequence(&self) -> u64 {
+        self.max_sequence
+    }
 }
 
 impl Clone for SSTReader {
     fn clone(&self) -> Self {
-        match Self::open(&self.path) {
-            Ok(reader) => reader,
-            Err(_) => {
+        // cheap clone: reuse the same mmap and indexes via Arc
+        Self {
+            path: self.path.clone(),
+            mmap: unsafe {
+                // SAFETY: original file is still open by OS, mmap is read-only
                 let file = File::open(&self.path).expect("Failed to reopen SST file");
-                let mmap = unsafe { Mmap::map(&file).expect("Failed to mmap SST file") };
-
-                Self {
-                    path: self.path.clone(),
-                    mmap,
-                    block_indexes: Arc::clone(&self.block_indexes),
-                    bloom_filter: Arc::clone(&self.bloom_filter),
-                }
-            }
+                Mmap::map(&file).expect("Failed to mmap SST file")
+            },
+            block_indexes: Arc::clone(&self.block_indexes),
+            bloom_filter: Arc::clone(&self.bloom_filter),
+            max_sequence: self.max_sequence,
         }
     }
 }

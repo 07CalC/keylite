@@ -33,14 +33,7 @@ impl SSTIterator {
         }
     }
 
-    // loads the next 16kB block from the file into the memory
-    //
-    // returns Result of bool
-    // true when block loaded successfully
-    // false if there are no more blocks left
-    // and give corrupt error if the blocks crc32 doesn't match
     fn load_next_block(&mut self) -> Result<bool> {
-        // no block left to load
         if self.block_idx >= self.reader.block_indexes.len() {
             return Ok(false);
         }
@@ -48,16 +41,13 @@ impl SSTIterator {
         let offset = self.reader.block_indexes[self.block_idx].offset;
         let mut pos = offset as usize;
 
-        // read the first 4 bytes to get the block len
         let block_len =
             u32::from_le_bytes(self.reader.mmap[pos..pos + 4].try_into().unwrap()) as usize;
         pos += 4;
 
-        // load the block into memory from mmap
         self.current_block_data = self.reader.mmap[pos..pos + block_len].to_vec();
         pos += block_len;
 
-        // verify the crc32
         let crc = u32::from_le_bytes(self.reader.mmap[pos..pos + 4].try_into().unwrap());
         let mut hasher = Hasher::new();
         hasher.update(&self.current_block_data);
@@ -73,10 +63,8 @@ impl SSTIterator {
 }
 
 impl Iterator for SSTIterator {
-    type Item = Result<(Vec<u8>, Vec<u8>)>;
+    type Item = Result<(Vec<u8>, Vec<u8>, u64)>; // now returns (key, value, seq)
 
-    // returns the next kv pair from the sstable
-    // used to get all the kv pairs from a particular sst
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if self.current_block_pos >= self.current_block_data.len() {
@@ -88,36 +76,32 @@ impl Iterator for SSTIterator {
             }
 
             let idx = self.current_block_pos;
-            if idx + 6 > self.current_block_data.len() {
-                self.current_block_pos = self.current_block_data.len();
+            let data = &self.current_block_data;
+
+            if idx + 6 > data.len() {
+                self.current_block_pos = data.len();
                 continue;
             }
 
-            // load the key_len, the first 2 bytes
-            let key_len =
-                u16::from_le_bytes(self.current_block_data[idx..idx + 2].try_into().unwrap())
-                    as usize;
+            let key_len = u16::from_le_bytes(data[idx..idx + 2].try_into().unwrap()) as usize;
+            let val_len = u32::from_le_bytes(data[idx + 2..idx + 6].try_into().unwrap()) as usize;
 
-            // load the val_len, the next 4 bytes
-            let val_len = u32::from_le_bytes(
-                self.current_block_data[idx + 2..idx + 6]
-                    .try_into()
-                    .unwrap(),
-            ) as usize;
+            let key_start = idx + 6;
+            let seq_start = key_start + key_len;
+            let val_start = seq_start + 8;
 
-            // load the actual key value
-            if idx + 6 + key_len + val_len > self.current_block_data.len() {
-                self.current_block_pos = self.current_block_data.len();
+            if val_start + val_len > data.len() {
+                self.current_block_pos = data.len();
                 continue;
             }
 
-            let key = self.current_block_data[idx + 6..idx + 6 + key_len].to_vec();
-            let val =
-                self.current_block_data[idx + 6 + key_len..idx + 6 + key_len + val_len].to_vec();
+            let key = data[key_start..key_start + key_len].to_vec();
+            let seq = u64::from_le_bytes(data[seq_start..seq_start + 8].try_into().unwrap());
+            let value = data[val_start..val_start + val_len].to_vec();
 
-            self.current_block_pos = idx + 6 + key_len + val_len;
+            self.current_block_pos = val_start + val_len;
 
-            return Some(Ok((key, val)));
+            return Some(Ok((key, value, seq)));
         }
     }
 }

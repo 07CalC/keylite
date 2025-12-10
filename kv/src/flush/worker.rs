@@ -56,9 +56,9 @@ pub fn flush_memtable_to_disk(
     let mut writer = SSTWriter::new(&sst_path)?;
 
     // iterate over memtable entries in sorted order (skipmap is already sorted)
-    for (key, val) in memtable.iter() {
+    for (vk, val) in memtable.iter() {
         // writer.add method adds the entry in the buffer
-        writer.add(&key, &val)?;
+        writer.add(&vk.key, &val, vk.seq)?;
     }
 
     // writer.finish method wrties all the entries is has in the buffer, with the bloom filters,

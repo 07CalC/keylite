@@ -19,12 +19,13 @@ pub enum CompactionMessage {
 struct MergeEntry {
     key: Vec<u8>,
     value: Vec<u8>,
+    seq: u64,
     sst_idx: usize,
 }
 
 impl PartialEq for MergeEntry {
     fn eq(&self, other: &Self) -> bool {
-        self.key == other.key
+        self.key == other.key && self.seq == other.seq
     }
 }
 
@@ -40,9 +41,13 @@ impl PartialOrd for MergeEntry {
 // i.e. in binary heap it will pop the smallest key first
 impl Ord for MergeEntry {
     fn cmp(&self, other: &Self) -> Ordering {
+        // smallest user key should come out of the heap first
         other
             .key
             .cmp(&self.key)
+            // for same key, we want the newest version first → higher seq first
+            .then(self.seq.cmp(&other.seq))
+            // tie-breaker on sst index (newer/older sst)
             .then(other.sst_idx.cmp(&self.sst_idx))
     }
 }
@@ -102,10 +107,11 @@ fn compact_sstables(
 
     // put the first Entry from each sst to the binary heap to proceed with k-way merge
     for (idx, iter) in iterators.iter_mut().enumerate() {
-        if let Some(Ok((key, value))) = iter.next() {
+        if let Some(Ok((key, value, seq))) = iter.next() {
             heap.push(MergeEntry {
                 key,
                 value,
+                seq,
                 sst_idx: idx,
             });
         }
@@ -128,10 +134,11 @@ fn compact_sstables(
         if let Some(ref lk) = last_key {
             if lk == &entry.key {
                 // get a new entry from the same sst to componsate the duplicate entry
-                if let Some(Ok((key, value))) = iterators[entry.sst_idx].next() {
+                if let Some(Ok((key, value, seq))) = iterators[entry.sst_idx].next() {
                     heap.push(MergeEntry {
                         key,
                         value,
+                        seq,
                         sst_idx: entry.sst_idx,
                     });
                 }
@@ -143,7 +150,8 @@ fn compact_sstables(
         // if value is not empty (i.e. it's not tombstoned, deletion is equivalent of putting an
         // emtpy value for that particular key) only then add it to sstwriter
         if !entry.value.is_empty() {
-            writer.add(&entry.key, &entry.value)?;
+            // pass seq into the new SST, preserving version ordering
+            writer.add(&entry.key, &entry.value, entry.seq)?;
             entry_count += 1;
         }
 
@@ -152,10 +160,11 @@ fn compact_sstables(
         last_key = Some(entry.key);
 
         // push a new entry from the same sst to the heap
-        if let Some(Ok((key, value))) = iterators[entry.sst_idx].next() {
+        if let Some(Ok((key, value, seq))) = iterators[entry.sst_idx].next() {
             heap.push(MergeEntry {
                 key,
                 value,
+                seq,
                 sst_idx: entry.sst_idx,
             });
         }

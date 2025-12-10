@@ -1,10 +1,34 @@
 use crossbeam_skiplist::SkipMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    sync::atomic::{AtomicUsize, Ordering},
+    u64,
+};
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct VersionedKey {
+    pub key: Vec<u8>,
+    pub seq: u64,
+}
+
+impl Ord for VersionedKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.key.cmp(&other.key) {
+            std::cmp::Ordering::Equal => other.seq.cmp(&self.seq),
+            ord => ord,
+        }
+    }
+}
+
+impl PartialOrd for VersionedKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 /// look up heirerchy:
 /// memtable -> immutable memtable -> sst
 pub struct Memtable {
-    data: SkipMap<Vec<u8>, Vec<u8>>,
+    data: SkipMap<VersionedKey, Vec<u8>>,
     size_bytes: AtomicUsize,
 }
 
@@ -16,22 +40,40 @@ impl Memtable {
         }
     }
 
-    pub fn put(&self, key: Vec<u8>, value: Vec<u8>) {
+    pub fn put(&self, key: Vec<u8>, value: Vec<u8>, seq: u64) {
         let key_size = key.len();
         let val_size = value.len();
 
-        if let Some(old_entry) = self.data.get(&key) {
-            self.size_bytes.fetch_sub(old_entry.value().len(), Ordering::Relaxed);
-        } else {
-            self.size_bytes.fetch_add(key_size, Ordering::Relaxed);
-        }
-        self.size_bytes.fetch_add(val_size, Ordering::Relaxed);
+        let vk = VersionedKey { key, seq };
 
-        self.data.insert(key, value);
+        self.size_bytes
+            .fetch_add(key_size + val_size + 8, Ordering::Relaxed);
+
+        self.data.insert(vk, value);
     }
 
     pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.data.get(key).map(|entry| entry.value().clone())
+        let range = self.data.range(
+            VersionedKey {
+                key: key.to_vec(),
+                seq: u64::MAX,
+            }..=VersionedKey {
+                key: key.to_vec(),
+                seq: 0,
+            },
+        );
+        for entry in range {
+            if entry.key().key == key {
+                let val = entry.value();
+                if val.is_empty() {
+                    return None;
+                }
+                return Some(val.clone());
+            } else {
+                break;
+            }
+        }
+        None
     }
 
     pub fn size_bytes(&self) -> usize {
@@ -46,7 +88,7 @@ impl Memtable {
         self.data.is_empty()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = (VersionedKey, Vec<u8>)> + '_ {
         self.data
             .iter()
             .map(|entry| (entry.key().clone(), entry.value().clone()))
