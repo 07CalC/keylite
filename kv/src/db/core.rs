@@ -2,7 +2,7 @@ use arc_swap::ArcSwap;
 use std::fs::read_dir;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 use crate::compaction::{compaction_worker, CompactionMessage};
@@ -11,8 +11,8 @@ use crate::error::DbError;
 use crate::flush::{flush_memtable_to_disk, flush_worker, FlushMessage, FlushQueue};
 use crate::sst::SSTReader;
 use crate::storage::Memtable;
-use crate::wal::reader::WalReader;
-use crate::wal::writer::WalWriter;
+use crate::wal::reader::{WalEntry, WalReader};
+use crate::wal::thread::wal_thread;
 use crossbeam_channel::Sender;
 
 use super::config::{MAX_SSTABLES, MEMTABLE_SIZE_THRESHOLD};
@@ -26,10 +26,11 @@ pub struct Db {
     next_sst_id: Arc<AtomicU64>,
     flush_sender: Sender<FlushMessage>,
     compaction_sender: Sender<CompactionMessage>,
+    wal_sender: Sender<WalEntry>,
     flush_thread: Option<JoinHandle<()>>,
     compaction_thread: Option<JoinHandle<()>>,
+    wal_thread: Option<JoinHandle<()>>,
     global_sequence: Arc<AtomicU64>,
-    wal: Arc<Mutex<WalWriter>>,
 }
 
 impl Db {
@@ -116,7 +117,17 @@ impl Db {
         }
 
         let global_sequence = Arc::new(AtomicU64::new(max_seq + 1));
-        let wal = Arc::new(Mutex::new(WalWriter::new(dir.join("wal.log")).unwrap()));
+
+        let (wal_tx, wal_rx) = crossbeam_channel::unbounded();
+
+        let wal_path = dir.join("wal.log");
+
+        let wal_thread = std::thread::spawn({
+            let wal_path = wal_path.clone();
+            move || {
+                wal_thread(wal_path, wal_rx, 20);
+            }
+        });
 
         Ok(Self {
             dir,
@@ -126,10 +137,11 @@ impl Db {
             next_sst_id,
             flush_sender,
             compaction_sender,
+            wal_sender: wal_tx,
             flush_thread: Some(flush_thread),
             compaction_thread: Some(compaction_thread),
             global_sequence,
-            wal,
+            wal_thread: Some(wal_thread),
         })
     }
 
@@ -141,10 +153,11 @@ impl Db {
     pub fn put(&self, key: &[u8], val: &[u8]) -> Result<()> {
         let seq = self.global_sequence.fetch_add(1, Ordering::SeqCst);
 
-        {
-            let mut wal = self.wal.lock().unwrap();
-            wal.append(key, val, seq)?;
-        }
+        let _ = self.wal_sender.send(WalEntry {
+            seq,
+            key: key.to_vec(),
+            val: val.to_vec(),
+        });
 
         let memtable = self.memtable.load();
         memtable.put(key.to_vec(), val.to_vec(), seq);
@@ -301,11 +314,16 @@ impl Drop for Db {
         let _ = self.flush_sender.send(FlushMessage::Shutdown);
         let _ = self.compaction_sender.send(CompactionMessage::Shutdown);
 
+        drop(self.wal_sender.clone());
+
         // join the background threads
         if let Some(handle) = self.flush_thread.take() {
             let _ = handle.join();
         }
         if let Some(handle) = self.compaction_thread.take() {
+            let _ = handle.join();
+        }
+        if let Some(handle) = self.wal_thread.take() {
             let _ = handle.join();
         }
     }
