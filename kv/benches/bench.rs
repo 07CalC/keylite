@@ -117,5 +117,6 @@ fn main() -> Result<(), DbError> {
         (total_ops * 1_000_000.0 / total_time) / 1000.0,
     );
 
+    drop(db);
     Ok(())
 }

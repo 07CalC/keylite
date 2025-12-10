@@ -2,7 +2,7 @@
 // while the process is running flush worked only flushes the oldes immutable memtable
 
 use arc_swap::ArcSwap;
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -10,6 +10,7 @@ use std::sync::Arc;
 use crate::error::DbError;
 use crate::sst::{SSTReader, SSTWriter};
 use crate::storage::Memtable;
+use crate::wal::thread::WalMessage;
 
 use super::queue::FlushMessage;
 
@@ -20,13 +21,16 @@ pub fn flush_worker(
     dir: std::path::PathBuf,
     sstables: Arc<ArcSwap<Vec<SSTReader>>>,
     next_sst_id: Arc<AtomicU64>,
+    wal_tx: Sender<WalMessage>,
 ) {
     loop {
         match receiver.recv() {
             Ok(FlushMessage::Flush(memtable)) => {
                 // println!("[FLUSH] Starting flush of immutable memtable ({} entries, {} bytes)",
                 //     memtable.len(), memtable.size_bytes());
-                if let Err(e) = flush_memtable_to_disk(&memtable, &dir, &sstables, &next_sst_id) {
+                if let Err(e) =
+                    flush_memtable_to_disk(&memtable, &dir, &sstables, &next_sst_id, wal_tx.clone())
+                {
                     eprintln!("Error flushing memtable: {}", e);
                 } else {
                     // println!("[FLUSH] Completed flush of immutable memtable");
@@ -42,6 +46,7 @@ pub fn flush_memtable_to_disk(
     dir: &Path,
     sstables: &Arc<ArcSwap<Vec<SSTReader>>>,
     next_sst_id: &Arc<AtomicU64>,
+    wal_tx: Sender<WalMessage>,
 ) -> Result<()> {
     // if memtable is empty there is nothing to flush
     if memtable.is_empty() {
@@ -79,5 +84,6 @@ pub fn flush_memtable_to_disk(
         }
     }
 
+    let _ = wal_tx.send(WalMessage::Truncate);
     Ok(())
 }

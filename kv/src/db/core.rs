@@ -12,7 +12,7 @@ use crate::flush::{flush_memtable_to_disk, flush_worker, FlushMessage, FlushQueu
 use crate::sst::SSTReader;
 use crate::storage::Memtable;
 use crate::wal::reader::{WalEntry, WalReader};
-use crate::wal::thread::wal_thread;
+use crate::wal::thread::{wal_thread, WalMessage};
 use crossbeam_channel::Sender;
 
 use super::config::{MAX_SSTABLES, MEMTABLE_SIZE_THRESHOLD};
@@ -26,7 +26,7 @@ pub struct Db {
     next_sst_id: Arc<AtomicU64>,
     flush_sender: Sender<FlushMessage>,
     compaction_sender: Sender<CompactionMessage>,
-    wal_sender: Sender<WalEntry>,
+    wal_sender: Sender<WalMessage>,
     flush_thread: Option<JoinHandle<()>>,
     compaction_thread: Option<JoinHandle<()>>,
     wal_thread: Option<JoinHandle<()>>,
@@ -79,8 +79,16 @@ impl Db {
         let flush_sstables = Arc::clone(&sstables);
         let flush_next_id = Arc::clone(&next_sst_id);
 
+        let (wal_tx, wal_rx) = crossbeam_channel::unbounded();
+        let wal_tx_for_flush = wal_tx.clone();
         let flush_thread = thread::spawn(move || {
-            flush_worker(flush_receiver, flush_dir, flush_sstables, flush_next_id)
+            flush_worker(
+                flush_receiver,
+                flush_dir,
+                flush_sstables,
+                flush_next_id,
+                wal_tx_for_flush,
+            )
         });
 
         let (compaction_sender, compaction_receiver) = crossbeam_channel::unbounded();
@@ -110,7 +118,13 @@ impl Db {
                 max_seq = max_seq.max(record.seq);
                 memtable.put(record.key, record.val, record.seq);
                 if memtable.size_bytes() >= MEMTABLE_SIZE_THRESHOLD {
-                    flush_memtable_to_disk(&memtable, &dir, &sstables, &next_sst_id)?;
+                    flush_memtable_to_disk(
+                        &memtable,
+                        &dir,
+                        &sstables,
+                        &next_sst_id,
+                        wal_tx.clone(),
+                    )?;
                     memtable.clear();
                 }
             }
@@ -118,15 +132,10 @@ impl Db {
 
         let global_sequence = Arc::new(AtomicU64::new(max_seq + 1));
 
-        let (wal_tx, wal_rx) = crossbeam_channel::unbounded();
-
         let wal_path = dir.join("wal.log");
 
-        let wal_thread = std::thread::spawn({
-            let wal_path = wal_path.clone();
-            move || {
-                wal_thread(wal_path, wal_rx, 20);
-            }
+        let wal_thread = thread::spawn(move || {
+            wal_thread(wal_path, wal_rx, 20);
         });
 
         Ok(Self {
@@ -153,11 +162,11 @@ impl Db {
     pub fn put(&self, key: &[u8], val: &[u8]) -> Result<()> {
         let seq = self.global_sequence.fetch_add(1, Ordering::SeqCst);
 
-        let _ = self.wal_sender.send(WalEntry {
+        let _ = self.wal_sender.send(WalMessage::Append(WalEntry {
             seq,
             key: key.to_vec(),
             val: val.to_vec(),
-        });
+        }));
 
         let memtable = self.memtable.load();
         memtable.put(key.to_vec(), val.to_vec(), seq);
@@ -297,8 +306,13 @@ impl Drop for Db {
 
         if !remaining_mt.is_empty() {
             // flush the mutable memtable with whatever data it has
-            let _ =
-                flush_memtable_to_disk(&remaining_mt, &self.dir, &self.sstables, &self.next_sst_id);
+            let _ = flush_memtable_to_disk(
+                &remaining_mt,
+                &self.dir,
+                &self.sstables,
+                &self.next_sst_id,
+                self.wal_sender.clone(),
+            );
         }
 
         let immutable = self.immutable_memtables.load_full();
@@ -306,15 +320,20 @@ impl Drop for Db {
         for mt in immutable.iter() {
             // flush all the immutable memtables to the disk
             if !mt.is_empty() {
-                let _ = flush_memtable_to_disk(mt, &self.dir, &self.sstables, &self.next_sst_id);
+                let _ = flush_memtable_to_disk(
+                    mt,
+                    &self.dir,
+                    &self.sstables,
+                    &self.next_sst_id,
+                    self.wal_sender.clone(),
+                );
             }
         }
 
         // stop the flush and compaction workers
         let _ = self.flush_sender.send(FlushMessage::Shutdown);
         let _ = self.compaction_sender.send(CompactionMessage::Shutdown);
-
-        drop(self.wal_sender.clone());
+        let _ = self.wal_sender.send(WalMessage::Shutdown);
 
         // join the background threads
         if let Some(handle) = self.flush_thread.take() {
