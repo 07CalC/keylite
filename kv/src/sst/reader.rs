@@ -279,7 +279,7 @@ impl SSTReader {
                     }
                 }
 
-                // Now pos points to the first occurrence, which has the highest sequence number
+                // pow pos points to the first occurrence, which has the highest sequence number
                 let entry = &entries[pos];
                 let entry_val = &block_data[entry.val_start..entry.val_start + entry.val_len];
 
