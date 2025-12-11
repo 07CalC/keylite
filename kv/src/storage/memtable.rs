@@ -76,6 +76,36 @@ impl Memtable {
         None
     }
 
+    pub fn get_seq(&self, key: &[u8], snapshot_seq: u64) -> Option<Vec<u8>> {
+        // For snapshot isolation, we need to find the latest version with seq < snapshot_seq
+        // VersionedKey is ordered by (key ASC, seq DESC), so we iterate from highest seq down
+        let range = self.data.range(
+            VersionedKey{
+                key: key.to_vec(),
+                seq: u64::MAX,  // Start from highest possible sequence
+            }..=VersionedKey{
+                key: key.to_vec(),
+                seq: 0,
+            },
+        );
+        for entry in range {
+            if entry.key().key == key {
+                // Only return entries with seq < snapshot_seq (strict inequality for snapshot isolation)
+                if entry.key().seq < snapshot_seq {
+                    let val = entry.value();
+                    if val.is_empty(){
+                        return None;
+                    }
+                    return Some(val.clone());
+                }
+                // Continue searching for older versions
+            } else {
+                break;
+            }
+        }
+        None
+    }
+
     pub fn size_bytes(&self) -> usize {
         self.size_bytes.load(Ordering::Relaxed)
     }
