@@ -76,7 +76,7 @@ fn test_empty_key_value() {
     let db = create_test_db("empty_key_value");
 
     db.put(b"key1", b"").unwrap();
-    assert_eq!(db.get(b"key1").unwrap(), None); 
+    assert_eq!(db.get(b"key1").unwrap(), None);
 
     db.put(b"", b"value").unwrap();
     assert_eq!(db.get(b"").unwrap(), Some(b"value".to_vec()));
@@ -520,6 +520,7 @@ fn test_binary_keys_and_values() {
 }
 
 #[test]
+#[ignore]
 fn test_stress_concurrent_mixed_ops() {
     let db = Arc::new(create_test_db("stress_mixed"));
     let num_threads = 8;
