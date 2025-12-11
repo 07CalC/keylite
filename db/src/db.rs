@@ -5,7 +5,7 @@ use keylite_kv::error::DbError;
 use serde_json::Value;
 
 use crate::{
-    collection::{CollectionMeta, Index, collection_meta_key, doc_key},
+    collection::{self, CollectionMeta, Index, collection_meta_key, doc_key},
     index::{non_unique_index, unique_index},
 };
 
@@ -63,29 +63,101 @@ impl KeyLite {
         let bytes = rmp_serde::to_vec(&meta).unwrap();
         self.kv.put(&key, &bytes)
     }
-    pub fn drop_collection(&self, name: &str) -> Result<()> {
-        let meta = collection_meta_key(&name);
-        self.kv.del(&meta)?;
 
-        let prefix = format!("col:{name}:doc:");
-        let (start, end) = prefix_range(&prefix);
-        let iter = self.kv.scan(Some(&start), Some(&end));
-        for (k, _) in iter {
-            self.kv.del(&k)?;
+    pub fn create_index(&self, indexes: Vec<Index>, collection: &str) -> Result<()> {
+        let key = collection_meta_key(collection);
+        let meta_bytes = match self.kv.get(&key) {
+            Ok(Some(meta)) => meta,
+            Ok(None) => {
+                return Err(DbError::Other(format!(
+                    "collection {collection} does not exist"
+                )));
+            }
+            Err(e) => return Err(e),
+        };
+        let mut meta: CollectionMeta = rmp_serde::from_slice(&meta_bytes)
+            .map_err(|_| DbError::Other("failed to decode collection meta".into()))?;
+        match meta.indexes.as_mut() {
+            Some(existing) => {
+                existing.extend(indexes);
+            }
+            None => meta.indexes = Some(indexes),
         }
+        let updated_bytes = rmp_serde::to_vec(&meta)
+            .map_err(|_| DbError::Other("failed to encode updated meta".into()))?;
+
+        self.kv.put(&key, &updated_bytes)?;
+        Ok(())
+    }
+
+    pub fn drop_index(&self, index_field: &str, collection: &str) -> Result<()> {
+        let key = collection_meta_key(collection);
+        let meta_bytes = match self.kv.get(&key)? {
+            Some(bytes) => bytes,
+            None => {
+                return Err(DbError::Other(format!(
+                    "collection {collection} does not exist"
+                )));
+            }
+        };
+
+        let mut meta: CollectionMeta = rmp_serde::from_slice(&meta_bytes)
+            .map_err(|_| DbError::Other("failed to decode collection meta".into()))?;
+
+        if let Some(ref mut indexes) = meta.indexes {
+            indexes.retain(|idx| idx.field != index_field);
+
+            if indexes.is_empty() {
+                meta.indexes = None;
+            }
+        } else {
+            return Err(DbError::Other(format!(
+                "index '{index_field}' does not exist on collection '{collection}'"
+            )));
+        }
+
+        self.del_by_prefix(&format!("idx:u:{collection}:{index_field}:"))?;
+        self.del_by_prefix(&format!("idx:n:{collection}:{index_field}:"))?;
+        let updated_bytes = rmp_serde::to_vec(&meta)
+            .map_err(|_| DbError::Other("failed to encode updated collection meta".into()))?;
+
+        self.kv.put(&key, &updated_bytes)?;
 
         Ok(())
     }
 
+    pub fn list_index(&self, collection: &str) -> Result<Vec<Index>> {
+        let key = collection_meta_key(collection);
+        let meta_bytes = match self.kv.get(&key) {
+            Ok(Some(meta)) => meta,
+            Ok(None) => return Err(DbError::Other("collection does not exist".into())),
+            Err(e) => return Err(e),
+        };
+        let meta: CollectionMeta = rmp_serde::from_slice(&meta_bytes)
+            .map_err(|_| DbError::Other("failed to decode collection meta".into()))?;
+        match meta.indexes {
+            Some(i) => return Ok(i),
+            None => return Ok(Vec::new()),
+        }
+    }
+
+    fn del_by_prefix(&self, prefix: &str) -> Result<()> {
+        let (start, end) = prefix_range(prefix);
+        let iter = self.kv.scan(Some(&start), Some(&end));
+        for (k, _) in iter {
+            self.kv.del(&k)?;
+        }
+        Ok(())
+    }
+
+    pub fn drop_collection(&self, name: &str) -> Result<()> {
+        let meta = collection_meta_key(&name);
+        self.kv.del(&meta)?;
+        self.del_by_prefix(&format!("col:{name}:doc:"))?;
+        Ok(())
+    }
+
     pub fn insert(&self, collection: &str, mut doc: Value) -> Result<String> {
-        let meta_key = collection_meta_key(collection);
-        let meta_bytes = self
-            .kv
-            .get(&meta_key)?
-            .ok_or_else(|| DbError::Other(format!("collection `{}` does not exist", collection)))?;
-
-        let meta: CollectionMeta = rmp_serde::from_slice(&meta_bytes).unwrap();
-
         let id = if let Some(id_val) = doc.get("_id") {
             id_val.as_str().unwrap().to_string()
         } else {
@@ -99,24 +171,24 @@ impl KeyLite {
 
         self.kv.put(&dkey, &doc_bytes)?;
 
-        if let Some(indexes) = &meta.indexes {
-            for index in indexes {
-                let field = &index.field;
-                let field_value = doc.get(field).cloned().unwrap_or(Value::Null);
+        let indexes = self.list_index(collection)?;
 
-                if index.unique {
-                    let ukey = unique_index(collection, field, &field_value);
-                    if self.kv.get(&ukey)?.is_some() {
-                        return Err(DbError::Other(format!(
-                            "unique constraint: {}={}",
-                            field, field_value
-                        )));
-                    }
-                    self.kv.put(&ukey, id.as_bytes())?;
-                } else {
-                    let ikey = non_unique_index(collection, field, &field_value, &id);
-                    self.kv.put(&ikey, &[1])?;
+        for index in indexes {
+            let field = &index.field;
+            let field_value = doc.get(field).cloned().unwrap_or(Value::Null);
+
+            if index.unique {
+                let ukey = unique_index(collection, field, &field_value);
+                if self.kv.get(&ukey)?.is_some() {
+                    return Err(DbError::Other(format!(
+                        "unique constraint: {}={}",
+                        field, field_value
+                    )));
                 }
+                self.kv.put(&ukey, id.as_bytes())?;
+            } else {
+                let ikey = non_unique_index(collection, field, &field_value, &id);
+                self.kv.put(&ikey, &[1])?;
             }
         }
 
@@ -193,5 +265,29 @@ impl KeyLite {
         }
 
         Ok(results)
+    }
+    pub fn get_by_field_forced(
+        &self,
+        collection: &str,
+        field: &str,
+        value: &Value,
+    ) -> Result<Vec<Value>> {
+        let prefix = format!("col:{collection}:doc:");
+        let (start, end) = prefix_range(&prefix);
+        let iter = self.kv.scan(Some(&start), Some(&end));
+        let mut result = Vec::new();
+        for (_, v) in iter {
+            let doc: Value = match rmp_serde::from_slice(&v) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+
+            if let Some(field_value) = doc.get(field) {
+                if field_value.to_string().to_lowercase() == value.to_string().to_lowercase() {
+                    result.push(doc);
+                }
+            }
+        }
+        Ok(result)
     }
 }
