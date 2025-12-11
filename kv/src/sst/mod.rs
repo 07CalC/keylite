@@ -47,7 +47,7 @@ pub use reader::SSTReader;
 pub use writer::SSTWriter;
 
 pub const BLOCK_SIZE: usize = 16 * 1024;
-pub const FOOTER_SIZE: usize = 44;
+pub const FOOTER_SIZE: usize = 52;
 pub const MAGIC: u64 = 0x4B45594C54_u64;
 
 #[derive(Debug, Error)]
@@ -71,6 +71,7 @@ pub struct Footer {
     pub index_offset: u64,
     pub bloom_offset: u64,
     pub num_entries: u64,
+    pub min_sequence: u64,
     pub max_sequence: u64,
 }
 

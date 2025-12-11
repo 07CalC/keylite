@@ -16,6 +16,7 @@ pub struct SSTWriter {
     total_bytes_written: u64,
     num_entries: u64,
     bloom_filter: Vec<u8>,
+    min_sequence: u64,
     max_sequence: u64,
 }
 
@@ -30,7 +31,8 @@ impl SSTWriter {
             total_bytes_written: 0,
             num_entries: 0,
             bloom_filter: vec![0u8; 16384],
-            max_sequence: u64::MIN,
+            min_sequence: u64::MIN,
+            max_sequence: u64::MAX,
         })
     }
 
@@ -53,6 +55,7 @@ impl SSTWriter {
         self.current_block.extend_from_slice(value);
 
         self.num_entries += 1;
+        self.min_sequence = self.min_sequence.min(seq);
         self.max_sequence = self.max_sequence.max(seq);
 
         if self.current_block.len() >= BLOCK_SIZE {
@@ -149,6 +152,7 @@ impl SSTWriter {
             index_offset,
             bloom_offset,
             num_entries: self.num_entries,
+            min_sequence: self.min_sequence,
             max_sequence: self.max_sequence,
         };
 
@@ -158,7 +162,8 @@ impl SSTWriter {
         footer_bytes[12..20].copy_from_slice(&footer.index_offset.to_le_bytes());
         footer_bytes[20..28].copy_from_slice(&footer.bloom_offset.to_le_bytes());
         footer_bytes[28..36].copy_from_slice(&footer.num_entries.to_le_bytes());
-        footer_bytes[36..44].copy_from_slice(&footer.max_sequence.to_le_bytes());
+        footer_bytes[36..44].copy_from_slice(&footer.min_sequence.to_le_bytes());
+        footer_bytes[44..52].copy_from_slice(&footer.max_sequence.to_le_bytes());
 
         self.file.write_all(&footer_bytes)?;
         self.file.flush()?;

@@ -11,6 +11,7 @@ use crate::error::DbError;
 use crate::flush::{flush_memtable_to_disk, flush_worker, FlushMessage, FlushQueue};
 use crate::sst::SSTReader;
 use crate::storage::Memtable;
+use crate::transaction::Transaction;
 use crate::wal::reader::{WalEntry, WalReader};
 use crate::wal::thread::{wal_thread, WalMessage};
 use crossbeam_channel::Sender;
@@ -130,7 +131,7 @@ impl Db {
             }
         }
 
-        let global_sequence = Arc::new(AtomicU64::new(max_seq + 1));
+        let global_sequence = Arc::new(AtomicU64::new(max_seq.saturating_add(1)));
 
         let wal_path = dir.join("wal.log");
 
@@ -154,6 +155,15 @@ impl Db {
         })
     }
 
+    pub fn begin(&self) -> Transaction<'_> {
+        Transaction::new(self.global_sequence.load(Ordering::Acquire), self)
+    }
+
+    // sllocate a new sequence number for transaction commits or other operations
+    pub(crate) fn next_sequence(&self) -> u64 {
+        self.global_sequence.fetch_add(1, Ordering::SeqCst)
+    }
+
     // write goes to the memtable
     // if memtable reaches a certain max size that memtable is freezed and a new empty memtable
     // takes its place
@@ -172,6 +182,22 @@ impl Db {
         memtable.put(key.to_vec(), val.to_vec(), seq);
 
         // flush if needed
+        self.flush_if_needed();
+
+        Ok(())
+    }
+
+    // put but with of a particular seq
+    // used in transactions
+    pub fn put_seq(&self, key: &[u8], val: &[u8], seq: u64) -> Result<()> {
+        let _ = self.wal_sender.send(WalMessage::Append(WalEntry {
+            seq,
+            key: key.to_vec(),
+            val: val.to_vec(),
+        }));
+        let memtable = self.memtable.load();
+        memtable.put(key.to_vec(), val.to_vec(), seq);
+
         self.flush_if_needed();
 
         Ok(())
@@ -219,11 +245,51 @@ impl Db {
         Ok(None)
     }
 
+    pub fn get_seq(&self, key: &[u8], seq: u64) -> Result<Option<Vec<u8>>> {
+        let memtable = self.memtable.load();
+
+        if let Some(val) = memtable.get_seq(key, seq) {
+            if val.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(val));
+        }
+
+        let immutables = self.immutable_memtables.load();
+        for imt in immutables.iter().rev() {
+            if let Some(val) = imt.get_seq(key, seq) {
+                if val.is_empty() {
+                    return Ok(None);
+                }
+                return Ok(Some(val));
+            }
+        }
+
+        let ssts = self.sstables.load();
+
+        for sst in ssts.iter() {
+            if let Some(val) = sst.get_seq(key, seq)? {
+                if val.is_empty() {
+                    return Ok(None);
+                }
+                return Ok(Some(val));
+            }
+        }
+
+        Ok(None)
+    }
+
     // deletion is not on spot, rather its like putting a tombstone (i.e. emtpy value) to that
     // particular key, after compaction the old entries with some value are removed, also the
     // emtpy value entry is also removed
     pub fn del(&self, key: &[u8]) -> Result<()> {
         self.put(key, &[])
+    }
+
+    // deletion with a particular seq
+    // used in transactions
+    pub fn del_seq(&self, key: &[u8], seq: u64) -> Result<()> {
+        self.put_seq(key, &[], seq)
     }
 
     pub fn flush_if_needed(&self) {
