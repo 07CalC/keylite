@@ -75,15 +75,9 @@ fn compact_sstables(
     sstables: &Arc<ArcSwap<Vec<SSTReader>>>,
     next_sst_id: &Arc<AtomicU64>,
 ) -> Result<()> {
-    // take the sstables atomically with retries
-    // load the old sstables and swap then with emtpy Vecs so that new writes can go there
-    let old_sstables = loop {
-        let current = sstables.load();
-        let prev = sstables.compare_and_swap(&current, Arc::new(Vec::new()));
-        if Arc::ptr_eq(&*prev, &*current) {
-            break (**current).clone();
-        }
-    };
+    // load the old sstables but DON'T clear them yet
+    // we need to keep them available for reads during compaction
+    let old_sstables = (**sstables.load()).clone();
 
     // no sst to flush to disk
     if old_sstables.is_empty() {
@@ -174,6 +168,15 @@ fn compact_sstables(
     // tombstoned, so all the sst are waste of storage containing only the tombstones, hence they
     // all should be deleted
     if entry_count == 0 {
+        // clear the SST list since all entries were tombstoned
+        loop {
+            let current = sstables.load();
+            let prev = sstables.compare_and_swap(&current, Arc::new(Vec::new()));
+            if Arc::ptr_eq(&*prev, &*current) {
+                break;
+            }
+        }
+        // remove old SST files
         for sst in old_sstables {
             let _ = std::fs::remove_file(sst.path());
         }
@@ -189,10 +192,23 @@ fn compact_sstables(
     // create a new sst reader to put in the db struct
     let reader = SSTReader::open(&sst_path)?;
 
-    // replace the sst list with the newly created sst
+    // replace the OLD sst list with the newly created compacted sst
+    // but preserve any NEW ssts that were added by flushes during compaction
     loop {
         let current = sstables.load();
-        let prev = sstables.compare_and_swap(&current, Arc::new(vec![reader.clone()]));
+        let current_ssts = (**current).clone();
+        
+        // find all SSTs that were added during compaction (not in old_sstables)
+        let new_ssts: Vec<SSTReader> = current_ssts
+            .into_iter()
+            .filter(|sst| !old_sstables.iter().any(|old| old.path() == sst.path()))
+            .collect();
+        
+        // combine: new flushes + compacted SST
+        let mut updated_ssts = vec![reader.clone()];
+        updated_ssts.extend(new_ssts);
+        
+        let prev = sstables.compare_and_swap(&current, Arc::new(updated_ssts));
         if Arc::ptr_eq(&*prev, &*current) {
             break;
         }

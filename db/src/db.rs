@@ -130,7 +130,11 @@ impl KeyLite {
         let key = collection_meta_key(collection);
         let meta_bytes = match self.kv.get(&key) {
             Ok(Some(meta)) => meta,
-            Ok(None) => return Err(DbError::Other("collection does not exist".into())),
+            Ok(None) => {
+                return Err(DbError::Other(
+                    format!("collection {collection} does not exist").into(),
+                ));
+            }
             Err(e) => return Err(e),
         };
         let meta: CollectionMeta = rmp_serde::from_slice(&meta_bytes)

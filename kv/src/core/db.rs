@@ -71,6 +71,7 @@ impl Db {
 
         let sstables = Arc::new(ArcSwap::from_pointee(sstables));
         let next_sst_id = Arc::new(AtomicU64::new(next_id));
+        let immutable_memtables = Arc::new(ArcSwap::from_pointee(Vec::new()));
 
         let flush_queue = FlushQueue::new();
         let flush_sender = flush_queue.sender();
@@ -78,6 +79,7 @@ impl Db {
 
         let flush_dir = dir.clone();
         let flush_sstables = Arc::clone(&sstables);
+        let flush_immutables = Arc::clone(&immutable_memtables);
         let flush_next_id = Arc::clone(&next_sst_id);
 
         let (wal_tx, wal_rx) = crossbeam_channel::unbounded();
@@ -87,6 +89,7 @@ impl Db {
                 flush_receiver,
                 flush_dir,
                 flush_sstables,
+                flush_immutables,
                 flush_next_id,
                 wal_tx_for_flush,
             )
@@ -142,7 +145,7 @@ impl Db {
         Ok(Self {
             dir,
             memtable: Arc::new(ArcSwap::from_pointee(memtable)),
-            immutable_memtables: Arc::new(ArcSwap::from_pointee(Vec::new())),
+            immutable_memtables,
             sstables,
             next_sst_id,
             flush_sender,
@@ -307,34 +310,35 @@ impl Db {
 
             if !old_memtable.is_empty() {
                 loop {
-                    // at a time only 1 mutable and 1 immutable memtables are allowed to be in the
-                    // memory, after the limit of 1 is reached the oldest immutable memtable is
-                    // sent to the flush queue which will write it to the sst file
+                    // keep up to 2 immutable memtables in memory. When a 3rd one is created,
+                    // send the oldest to the flush queue. The memtable will remain in the list
+                    // until the flush worker successfully writes it to an SST file, to dodge race
+                    // conditions
+                    // this ensures data is always available during async flush operations.
                     let current = self.immutable_memtables.load();
                     let mut new_immutables = (**current).clone();
                     new_immutables.push(old_memtable.clone());
 
-                    let oldest = if new_immutables.len() > 1 {
-                        Some(new_immutables.remove(0))
+                    // only send to flush if we have more than 2 immutable memtables
+                    // but dont' remove it from the list yet,
+                    // its the job of the flush worker
+                    // after successful flushing and creation on SSTable, flush worker will remove
+                    // the immutable memtable that just got flushed from the memory
+                    let should_flush = if new_immutables.len() > 2 {
+                        Some(new_immutables[0].clone()) // send the oldest to flush
                     } else {
                         None
                     };
 
-                    // let remaining_count = new_immutables.len();
-
-                    // swap the immutable memtables with new one
-                    // the oldest one being replaced by a new emtpy one
+                    // swap in the new list
                     let prev = self
                         .immutable_memtables
                         .compare_and_swap(&current, Arc::new(new_immutables));
 
-                    // send the oldest immutable memtable to the flush queue
                     if Arc::ptr_eq(&*prev, &*current) {
-                        if let Some(oldest) = oldest {
-                            // println!("[FLUSH] Sending immutable memtable to flush queue. Remaining immutable memtables in memory: {}", remaining_count);
+                        // send to flush queue if needed
+                        if let Some(oldest) = should_flush {
                             let _ = self.flush_sender.send(FlushMessage::Flush(oldest));
-                        } else {
-                            // println!("[MEMTABLE] Created new immutable memtable. Total immutable memtables in memory: {}", remaining_count);
                         }
                         break;
                     }

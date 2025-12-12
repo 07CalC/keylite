@@ -1,4 +1,6 @@
-// flush worker runs on a background thread, it's job is to flush the memtable to the disk
+// flush worker runs on a background thread, it's job is to flush the memtable to the disk and
+// remove the memtables that are flushed from memory, ONLY AND ONLY after successfull addition of a
+// new SSTable
 // while the process is running flush worked only flushes the oldes immutable memtable
 
 use arc_swap::ArcSwap;
@@ -20,6 +22,7 @@ pub fn flush_worker(
     receiver: Receiver<FlushMessage>,
     dir: std::path::PathBuf,
     sstables: Arc<ArcSwap<Vec<SSTReader>>>,
+    immutable_memtables: Arc<ArcSwap<Vec<Arc<Memtable>>>>,
     next_sst_id: Arc<AtomicU64>,
     wal_tx: Sender<WalMessage>,
 ) {
@@ -28,9 +31,14 @@ pub fn flush_worker(
             Ok(FlushMessage::Flush(memtable)) => {
                 // println!("[FLUSH] Starting flush of immutable memtable ({} entries, {} bytes)",
                 //     memtable.len(), memtable.size_bytes());
-                if let Err(e) =
-                    flush_memtable_to_disk(&memtable, &dir, &sstables, &next_sst_id, wal_tx.clone())
-                {
+                if let Err(e) = flush_and_remove_memtable(
+                    &memtable,
+                    &dir,
+                    &sstables,
+                    &immutable_memtables,
+                    &next_sst_id,
+                    wal_tx.clone(),
+                ) {
                     eprintln!("Error flushing memtable: {}", e);
                 } else {
                     // println!("[FLUSH] Completed flush of immutable memtable");
@@ -39,6 +47,46 @@ pub fn flush_worker(
             Ok(FlushMessage::Shutdown) | Err(_) => break,
         }
     }
+}
+
+// flush a memtable and then remove it from the immutable memtables list onlfy after successfull
+// flush and creation of SSTable
+fn flush_and_remove_memtable(
+    memtable: &Arc<Memtable>,
+    dir: &Path,
+    sstables: &Arc<ArcSwap<Vec<SSTReader>>>,
+    immutable_memtables: &Arc<ArcSwap<Vec<Arc<Memtable>>>>,
+    next_sst_id: &Arc<AtomicU64>,
+    wal_tx: Sender<WalMessage>,
+) -> Result<()> {
+    // flush the memtable to disk
+    flush_memtable_to_disk(memtable, dir, sstables, next_sst_id, wal_tx)?;
+
+    // now that the SST is added
+    // we can remove the immutable memtable from the list
+    // find and remove this specific immutable memtable from the immutable memtables list
+    loop {
+        let current = immutable_memtables.load();
+        let mut new_immutables = (**current).clone();
+
+        // find the index of this memtable (comparing by pointer)
+        if let Some(pos) = new_immutables
+            .iter()
+            .position(|mt| Arc::ptr_eq(mt, memtable))
+        {
+            new_immutables.remove(pos);
+
+            let prev = immutable_memtables.compare_and_swap(&current, Arc::new(new_immutables));
+            if Arc::ptr_eq(&*prev, &*current) {
+                break;
+            }
+        } else {
+            // memtable not found in the list, might have been already removed
+            break;
+        }
+    }
+
+    Ok(())
 }
 
 pub fn flush_memtable_to_disk(
@@ -72,6 +120,7 @@ pub fn flush_memtable_to_disk(
 
     let reader = SSTReader::open(&sst_path)?;
 
+    // add the newly created SST to the sstables list
     loop {
         let current = sstables.load();
         let mut new_sstables = (**current).clone();

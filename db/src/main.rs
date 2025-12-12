@@ -18,7 +18,7 @@ fn main() {
     ];
 
     let t1 = Instant::now();
-    db.create_collection("users", Some(indexes)).unwrap();
+    db.create_collection("users", None).unwrap();
     println!("time taken to create_collection: {:?}", t1.elapsed());
 
     let users = vec![
