@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::error::DbError;
+use crate::memtable::Memtable;
 use crate::sst::{SSTReader, SSTWriter};
-use crate::storage::Memtable;
 use crate::wal::thread::WalMessage;
 
 use super::queue::FlushMessage;

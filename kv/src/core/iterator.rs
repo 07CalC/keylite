@@ -3,8 +3,8 @@
 // and the SSTables (least priority)
 //
 use crate::{
+    memtable::{skipmap::VersionedKey, Memtable},
     sst::{SSTIterator, SSTReader},
-    storage::{memtable::VersionedKey, Memtable},
 };
 use std::{cmp::Ordering, collections::BinaryHeap, sync::Arc};
 

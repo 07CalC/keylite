@@ -1,4 +1,4 @@
-use keylite_kv::db::Db;
+use keylite_kv::core::Db;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

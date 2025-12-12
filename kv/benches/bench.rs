@@ -2,7 +2,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::time::Instant;
 
-use keylite_kv::db::Db; // <-- YOUR DB
+use keylite_kv::core::Db; // <-- YOUR DB
 use keylite_kv::error::DbError;
 
 // Number of operations per test

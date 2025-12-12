@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use keylite_kv::db::Db;
+use keylite_kv::core::Db;
 use keylite_kv::error::DbError;
 use serde_json::Value;
 

@@ -1,4 +1,4 @@
-use keylite_kv::db::Db;
+use keylite_kv::core::Db;
 use std::fs;
 
 #[test]

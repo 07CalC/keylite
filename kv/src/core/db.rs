@@ -6,11 +6,11 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 use crate::compaction::{compaction_worker, CompactionMessage};
-use crate::db::iterator::DbIterator;
+use crate::core::iterator::DbIterator;
 use crate::error::DbError;
 use crate::flush::{flush_memtable_to_disk, flush_worker, FlushMessage, FlushQueue};
+use crate::memtable::Memtable;
 use crate::sst::SSTReader;
-use crate::storage::Memtable;
 use crate::transaction::Transaction;
 use crate::wal::reader::{WalEntry, WalReader};
 use crate::wal::thread::{wal_thread, WalMessage};

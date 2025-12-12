@@ -1,4 +1,4 @@
-use crate::storage::Memtable;
+use crate::memtable::Memtable;
 use crossbeam_channel::{Receiver, Sender};
 use std::sync::Arc;
 
