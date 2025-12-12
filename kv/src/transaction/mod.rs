@@ -1,4 +1,4 @@
-use crossbeam_skiplist::{SkipList, SkipMap};
+use crossbeam_skiplist::SkipMap;
 
 use crate::core::{Db, Result};
 

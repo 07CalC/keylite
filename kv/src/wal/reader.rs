@@ -24,7 +24,7 @@ impl WalReader {
         })
     }
 
-    pub fn next(&mut self) -> Result<Option<WalEntry>> {
+    pub fn next_entry(&mut self) -> Result<Option<WalEntry>> {
         // 14 bytes,
         // 8 for seq
         // 2 for key_len

@@ -262,7 +262,6 @@ impl SSTReader {
             key_len: usize,
             val_start: usize,
             val_len: usize,
-            seq: u64,
         }
 
         let mut entries: Vec<EntryMeta> = Vec::new();
@@ -290,7 +289,7 @@ impl SSTReader {
             idx += key_len;
 
             // nead seq but we don't use it yet in get()
-            let seq = u64::from_le_bytes(block_data[idx..idx + 8].try_into().unwrap());
+            // let seq = u64::from_le_bytes(block_data[idx..idx + 8].try_into().unwrap());
             idx += 8;
 
             let val_start = idx;
@@ -301,7 +300,6 @@ impl SSTReader {
                 key_len,
                 val_start,
                 val_len,
-                seq,
             });
         }
 

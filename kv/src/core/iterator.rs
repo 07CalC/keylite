@@ -12,7 +12,7 @@ use std::{cmp::Ordering, collections::BinaryHeap, sync::Arc};
 pub struct IterEntry {
     key: Vec<u8>,
     value: Vec<u8>,
-    seq: u64,        // <-- added sequence number
+    seq: u64,
     priority: usize, // determines source order (mem → immut → sst)
 }
 
@@ -63,7 +63,7 @@ enum IterSource {
         pos: usize,
         priority: usize,
     },
-    SST {
+    Sst {
         // since we have already implemented a iterator for SST we can directly consume it here
         iter: SSTIterator,
         priority: usize,
@@ -120,13 +120,13 @@ impl DbIterator {
         }
 
         for (i, sst) in sstables.iter().enumerate() {
-            let priority = if immutable_memtable.len() > 0 {
+            let priority = if !immutable_memtable.is_empty() {
                 immutable_memtable.len() - i - 1
             } else {
                 memtable_priority - i - 1
             };
             let iter = SSTIterator::new(sst.clone());
-            sources.push(IterSource::SST { iter, priority });
+            sources.push(IterSource::Sst { iter, priority });
         }
 
         // preload one entry from each source
@@ -166,7 +166,7 @@ impl DbIterator {
 
                     (vk.key, v, vk.seq, *priority)
                 }
-                IterSource::SST { iter, priority } => match iter.next()? {
+                IterSource::Sst { iter, priority } => match iter.next()? {
                     Ok((k, v, seq)) => (k, v, seq, *priority),
                     Err(_) => return None,
                 },
@@ -206,7 +206,7 @@ impl Iterator for DbIterator {
             for idx in 0..self.sources.len() {
                 let source_priority = match &self.sources[idx] {
                     IterSource::Memtable { priority, .. } => *priority,
-                    IterSource::SST { priority, .. } => *priority,
+                    IterSource::Sst { priority, .. } => *priority,
                 };
 
                 if source_priority == entry.priority {

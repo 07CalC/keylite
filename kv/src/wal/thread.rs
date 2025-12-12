@@ -1,8 +1,5 @@
 use crossbeam_channel::Receiver;
-use std::{
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::{path::PathBuf, time::Instant};
 
 use crate::wal::{reader::WalEntry, writer::WalWriter};
 

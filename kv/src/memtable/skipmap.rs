@@ -1,8 +1,5 @@
 use crossbeam_skiplist::SkipMap;
-use std::{
-    sync::atomic::{AtomicUsize, Ordering},
-    u64,
-};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct VersionedKey {
@@ -53,7 +50,7 @@ impl Memtable {
     }
 
     pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        let range = self.data.range(
+        let mut range = self.data.range(
             VersionedKey {
                 key: key.to_vec(),
                 seq: u64::MAX,
@@ -62,15 +59,25 @@ impl Memtable {
                 seq: 0,
             },
         );
-        for entry in range {
+        // for entry in range {
+        //     if entry.key().key == key {
+        //         let val = entry.value();
+        //         if val.is_empty() {
+        //             return None;
+        //         }
+        //         return Some(val.clone());
+        //     } else {
+        //         break;
+        //     }
+        // }
+        //
+        if let Some(entry) = range.next() {
             if entry.key().key == key {
                 let val = entry.value();
                 if val.is_empty() {
                     return None;
                 }
                 return Some(val.clone());
-            } else {
-                break;
             }
         }
         None
@@ -80,10 +87,10 @@ impl Memtable {
         // For snapshot isolation, we need to find the latest version with seq < snapshot_seq
         // VersionedKey is ordered by (key ASC, seq DESC), so we iterate from highest seq down
         let range = self.data.range(
-            VersionedKey{
+            VersionedKey {
                 key: key.to_vec(),
-                seq: u64::MAX,  // Start from highest possible sequence
-            }..=VersionedKey{
+                seq: u64::MAX, // Start from highest possible sequence
+            }..=VersionedKey {
                 key: key.to_vec(),
                 seq: 0,
             },
@@ -93,7 +100,7 @@ impl Memtable {
                 // Only return entries with seq < snapshot_seq (strict inequality for snapshot isolation)
                 if entry.key().seq < snapshot_seq {
                     let val = entry.value();
-                    if val.is_empty(){
+                    if val.is_empty() {
                         return None;
                     }
                     return Some(val.clone());

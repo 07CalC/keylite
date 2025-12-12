@@ -52,7 +52,7 @@ impl Db {
                     sst_ids.push(id);
                 }
             }
-            if let Some(_) = name.strip_prefix("wal") {
+            if name.strip_prefix("wal").is_some() {
                 has_wal = true;
             }
         }
@@ -115,7 +115,7 @@ impl Db {
 
         if has_wal {
             let mut wal_reader = WalReader::new(dir.join("wal.log")).unwrap();
-            while let Some(record) = wal_reader.next()? {
+            while let Some(record) = wal_reader.next_entry()? {
                 max_seq = max_seq.max(record.seq);
                 memtable.put(record.key, record.val, record.seq);
                 if memtable.size_bytes() >= MEMTABLE_SIZE_THRESHOLD {

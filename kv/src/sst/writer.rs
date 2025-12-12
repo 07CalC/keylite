@@ -31,8 +31,8 @@ impl SSTWriter {
             total_bytes_written: 0,
             num_entries: 0,
             bloom_filter: vec![0u8; 16384],
-            min_sequence: u64::MIN,
-            max_sequence: u64::MAX,
+            min_sequence: u64::MAX,
+            max_sequence: u64::MIN,
         })
     }
 
