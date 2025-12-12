@@ -8,6 +8,8 @@ pub enum DbError {
     SST(#[from] crate::sst::SSTError),
     #[error("other: {0}")]
     Other(String),
+    #[error("data corruption: {0}")]
+    DataCorruption(String),
 }
 
-pub type DbResult<T> = std::result::Result<T, DbError>;
+pub type Result<T> = std::result::Result<T, crate::error::DbError>;

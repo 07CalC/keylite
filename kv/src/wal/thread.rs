@@ -10,7 +10,13 @@ pub enum WalMessage {
 }
 
 pub fn wal_thread(path: PathBuf, rx: Receiver<WalMessage>, flush_interval_ms: u64) {
-    let mut wal = WalWriter::new(&path).expect("Failed to open WAL");
+    let mut wal = match WalWriter::new(&path) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("Failed to open WAL at {:?}: {}. WAL thread exiting.", path, e);
+            return;
+        }
+    };
 
     let mut last_flush = Instant::now();
 
@@ -23,8 +29,16 @@ pub fn wal_thread(path: PathBuf, rx: Receiver<WalMessage>, flush_interval_ms: u6
                 WalMessage::Truncate => {
                     let _ = wal.sync();
                     drop(wal);
-                    let _ = std::fs::remove_file(&path).expect("failed to removed wal file");
-                    wal = WalWriter::new(&path).expect("failed to recreate Wal");
+                    if let Err(e) = std::fs::remove_file(&path) {
+                        eprintln!("Failed to remove WAL file: {}", e);
+                    }
+                    wal = match WalWriter::new(&path) {
+                        Ok(w) => w,
+                        Err(e) => {
+                            eprintln!("Failed to recreate WAL: {}. WAL thread exiting.", e);
+                            return;
+                        }
+                    };
                     last_flush = Instant::now();
                 }
                 WalMessage::Shutdown => {

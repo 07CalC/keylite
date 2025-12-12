@@ -60,9 +60,35 @@ pub enum SSTError {
     InvalidMagic,
     #[error("key not found")]
     NotFound,
+    #[error("data conversion error: {0}")]
+    ConversionError(String),
 }
 
 pub type Result<T> = std::result::Result<T, SSTError>;
+
+#[inline]
+fn to_u16(bytes: &[u8]) -> Result<u16> {
+    bytes
+        .try_into()
+        .map(u16::from_le_bytes)
+        .map_err(|_| SSTError::ConversionError("Failed to convert bytes to u16".to_string()))
+}
+
+#[inline]
+fn to_u32(bytes: &[u8]) -> Result<u32> {
+    bytes
+        .try_into()
+        .map(u32::from_le_bytes)
+        .map_err(|_| SSTError::ConversionError("Failed to convert bytes to u32".to_string()))
+}
+
+#[inline]
+fn to_u64(bytes: &[u8]) -> Result<u64> {
+    bytes
+        .try_into()
+        .map(u64::from_le_bytes)
+        .map_err(|_| SSTError::ConversionError("Failed to convert bytes to u64".to_string()))
+}
 
 #[derive(Debug, Clone)]
 pub struct Footer {

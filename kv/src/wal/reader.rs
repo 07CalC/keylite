@@ -35,9 +35,21 @@ impl WalReader {
             return Ok(None);
         }
 
-        let seq = u64::from_le_bytes(header[0..8].try_into().unwrap());
-        let key_len = u16::from_le_bytes(header[8..10].try_into().unwrap()) as usize;
-        let val_len = u32::from_le_bytes(header[10..14].try_into().unwrap()) as usize;
+        let seq = u64::from_le_bytes(
+            header[0..8]
+                .try_into()
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid seq bytes"))?,
+        );
+        let key_len = u16::from_le_bytes(
+            header[8..10]
+                .try_into()
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid key_len bytes"))?,
+        ) as usize;
+        let val_len = u32::from_le_bytes(
+            header[10..14]
+                .try_into()
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid val_len bytes"))?,
+        ) as usize;
 
         let total_len = key_len + val_len;
         let mut data = vec![0u8; total_len];
@@ -45,7 +57,7 @@ impl WalReader {
         self.reader.read_exact(&mut data)?;
 
         let key = data[0..key_len].to_vec();
-        let val = data[key_len..val_len].to_vec();
+        let val = data[key_len..].to_vec();
 
         let mut crc_bytes = [0u8; 4];
         self.reader.read_exact(&mut crc_bytes)?;

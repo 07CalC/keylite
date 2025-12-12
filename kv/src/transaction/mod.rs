@@ -1,6 +1,6 @@
 use crossbeam_skiplist::SkipMap;
 
-use crate::core::{Db, Result};
+use crate::{core::Db, error::Result};
 
 pub enum TxnOp {
     Put { key: Vec<u8>, val: Vec<u8> },

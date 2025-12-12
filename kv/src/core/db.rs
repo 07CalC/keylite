@@ -7,7 +7,7 @@ use std::thread::{self, JoinHandle};
 
 use crate::compaction::{compaction_worker, CompactionMessage};
 use crate::core::iterator::DbIterator;
-use crate::error::DbError;
+use crate::error::{DbError, Result};
 use crate::flush::{flush_memtable_to_disk, flush_worker, FlushMessage, FlushQueue};
 use crate::memtable::Memtable;
 use crate::sst::SSTReader;
@@ -17,7 +17,6 @@ use crate::wal::thread::{wal_thread, WalMessage};
 use crossbeam_channel::Sender;
 
 use super::config::{MAX_SSTABLES, MEMTABLE_SIZE_THRESHOLD};
-use super::Result;
 
 pub struct Db {
     dir: PathBuf,
@@ -52,7 +51,7 @@ impl Db {
                     sst_ids.push(id);
                 }
             }
-            if name.strip_prefix("wal").is_some() {
+            if name.starts_with("wal") {
                 has_wal = true;
             }
         }
@@ -117,19 +116,22 @@ impl Db {
         }
 
         if has_wal {
-            let mut wal_reader = WalReader::new(dir.join("wal.log")).unwrap();
-            while let Some(record) = wal_reader.next_entry()? {
-                max_seq = max_seq.max(record.seq);
-                memtable.put(record.key, record.val, record.seq);
-                if memtable.size_bytes() >= MEMTABLE_SIZE_THRESHOLD {
-                    flush_memtable_to_disk(
-                        &memtable,
-                        &dir,
-                        &sstables,
-                        &next_sst_id,
-                        wal_tx.clone(),
-                    )?;
-                    memtable.clear();
+            let wal_path = dir.join("wal.log");
+            if wal_path.exists() {
+                let mut wal_reader = WalReader::new(&wal_path)?;
+                while let Some(record) = wal_reader.next_entry()? {
+                    max_seq = max_seq.max(record.seq);
+                    memtable.put(record.key, record.val, record.seq);
+                    if memtable.size_bytes() >= MEMTABLE_SIZE_THRESHOLD {
+                        flush_memtable_to_disk(
+                            &memtable,
+                            &dir,
+                            &sstables,
+                            &next_sst_id,
+                            wal_tx.clone(),
+                        )?;
+                        memtable.clear();
+                    }
                 }
             }
         }

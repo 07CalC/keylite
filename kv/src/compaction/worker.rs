@@ -91,7 +91,16 @@ fn compact_sstables(
     let mut iterators: Vec<_> = old_sstables
         .iter()
         .rev()
-        .map(|sst| SSTIterator::new(SSTReader::open(sst.path()).unwrap()))
+        .enumerate()
+        .filter_map(|(idx, sst)| {
+            match SSTReader::open(sst.path()) {
+                Ok(reader) => Some(SSTIterator::new(reader)),
+                Err(e) => {
+                    eprintln!("Failed to open SST file {} for compaction: {}. Skipping.", idx, e);
+                    None
+                }
+            }
+        })
         .collect();
 
     // binaryheap works as max heap

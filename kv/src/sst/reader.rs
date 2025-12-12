@@ -4,7 +4,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::{bloom::BloomFilter, BlockIndex, Footer, Result, SSTError, FOOTER_SIZE, MAGIC};
+use super::{bloom::BloomFilter, BlockIndex, Footer, Result, SSTError, FOOTER_SIZE, MAGIC, to_u16, to_u32, to_u64};
 
 pub struct SSTReader {
     path: PathBuf,
@@ -55,17 +55,17 @@ impl SSTReader {
         // 44..52 max_sequence (u64)
         debug_assert!(bytes.len() == FOOTER_SIZE);
 
-        let magic = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+        let magic = to_u64(&bytes[0..8])?;
         if magic != MAGIC {
             return Err(SSTError::InvalidMagic);
         }
 
-        let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-        let index_offset = u64::from_le_bytes(bytes[12..20].try_into().unwrap());
-        let bloom_offset = u64::from_le_bytes(bytes[20..28].try_into().unwrap());
-        let num_entries = u64::from_le_bytes(bytes[28..36].try_into().unwrap());
-        let min_sequence = u64::from_le_bytes(bytes[36..44].try_into().unwrap());
-        let max_sequence = u64::from_le_bytes(bytes[44..52].try_into().unwrap());
+        let version = to_u32(&bytes[8..12])?;
+        let index_offset = to_u64(&bytes[12..20])?;
+        let bloom_offset = to_u64(&bytes[20..28])?;
+        let num_entries = to_u64(&bytes[28..36])?;
+        let min_sequence = to_u64(&bytes[36..44])?;
+        let max_sequence = to_u64(&bytes[44..52])?;
 
         Ok(Footer {
             magic,
@@ -83,13 +83,13 @@ impl SSTReader {
 
         // index block is stored as:
         // [block_len: u32][block_data...][crc32: u32]
-        let block_len = u32::from_le_bytes(mmap[pos..pos + 4].try_into().unwrap()) as usize;
+        let block_len = to_u32(&mmap[pos..pos + 4])? as usize;
         pos += 4;
 
         let block_data = &mmap[pos..pos + block_len];
         pos += block_len;
 
-        let crc = u32::from_le_bytes(mmap[pos..pos + 4].try_into().unwrap());
+        let crc = to_u32(&mmap[pos..pos + 4])?;
         let mut hasher = Hasher::new();
         hasher.update(block_data);
         if hasher.finalize() != crc {
@@ -103,14 +103,14 @@ impl SSTReader {
         //   offset (u64)
         //   first_key bytes
         let mut indexes = Vec::new();
-        let num_entries = u32::from_le_bytes(block_data[0..4].try_into().unwrap()) as usize;
+        let num_entries = to_u32(&block_data[0..4])? as usize;
         let mut idx = 4;
 
         for _ in 0..num_entries {
-            let key_len = u16::from_le_bytes(block_data[idx..idx + 2].try_into().unwrap()) as usize;
+            let key_len = to_u16(&block_data[idx..idx + 2])? as usize;
             idx += 2;
 
-            let offset = u64::from_le_bytes(block_data[idx..idx + 8].try_into().unwrap());
+            let offset = to_u64(&block_data[idx..idx + 8])?;
             idx += 8;
 
             let key = block_data[idx..idx + key_len].to_vec().into_boxed_slice();
@@ -207,7 +207,7 @@ impl SSTReader {
             if let Some((ent_seq, ent_val)) =
                 self.search_block_seq(self.block_indexes[idx].offset, key, snapshot_seq)?
             {
-                if best.is_none() || ent_seq > best.as_ref().unwrap().0 {
+                if best.is_none() || ent_seq > best.as_ref().map(|(s, _)| *s).unwrap_or(0) {
                     best = Some((ent_seq, ent_val));
                 }
             }
@@ -232,14 +232,13 @@ impl SSTReader {
         let block_data = {
             let mut pos = offset as usize;
 
-            let block_len =
-                u32::from_le_bytes(self.mmap[pos..pos + 4].try_into().unwrap()) as usize;
+            let block_len = to_u32(&self.mmap[pos..pos + 4])? as usize;
             pos += 4;
 
             let block_data = &self.mmap[pos..pos + block_len];
             pos += block_len;
 
-            let crc = u32::from_le_bytes(self.mmap[pos..pos + 4].try_into().unwrap());
+            let crc = to_u32(&self.mmap[pos..pos + 4])?;
             let mut hasher = Hasher::new();
             hasher.update(block_data);
             if hasher.finalize() != crc {
@@ -274,10 +273,10 @@ impl SSTReader {
                 break;
             }
 
-            let key_len = u16::from_le_bytes(block_data[idx..idx + 2].try_into().unwrap()) as usize;
+            let key_len = to_u16(&block_data[idx..idx + 2])? as usize;
             idx += 2;
 
-            let val_len = u32::from_le_bytes(block_data[idx..idx + 4].try_into().unwrap()) as usize;
+            let val_len = to_u32(&block_data[idx..idx + 4])? as usize;
             idx += 4;
 
             // now we need: key_len + 8(seq) + val_len bytes
@@ -289,7 +288,6 @@ impl SSTReader {
             idx += key_len;
 
             // nead seq but we don't use it yet in get()
-            // let seq = u64::from_le_bytes(block_data[idx..idx + 8].try_into().unwrap());
             idx += 8;
 
             let val_start = idx;
@@ -349,14 +347,13 @@ impl SSTReader {
     ) -> Result<Option<(u64, Option<Vec<u8>>)>> {
         let block_data = {
             let mut pos = offset as usize;
-            let block_len =
-                u32::from_le_bytes(self.mmap[pos..pos + 4].try_into().unwrap()) as usize;
+            let block_len = to_u32(&self.mmap[pos..pos + 4])? as usize;
             pos += 4;
 
             let block_data = &self.mmap[pos..pos + block_len];
             pos += block_len;
 
-            let crc = u32::from_le_bytes(self.mmap[pos..pos + 4].try_into().unwrap());
+            let crc = to_u32(&self.mmap[pos..pos + 4])?;
             let mut hasher = Hasher::new();
             hasher.update(block_data);
             if hasher.finalize() != crc {
@@ -384,10 +381,10 @@ impl SSTReader {
                 break;
             }
 
-            let key_len = u16::from_le_bytes(block_data[idx..idx + 2].try_into().unwrap()) as usize;
+            let key_len = to_u16(&block_data[idx..idx + 2])? as usize;
             idx += 2;
 
-            let val_len = u32::from_le_bytes(block_data[idx..idx + 4].try_into().unwrap()) as usize;
+            let val_len = to_u32(&block_data[idx..idx + 4])? as usize;
             idx += 4;
 
             if idx + key_len + 8 + val_len > len {
@@ -397,7 +394,7 @@ impl SSTReader {
             let key_start = idx;
             idx += key_len;
 
-            let seq = u64::from_le_bytes(block_data[idx..idx + 8].try_into().unwrap());
+            let seq = to_u64(&block_data[idx..idx + 8])?;
             idx += 8;
 
             let val_start = idx;
@@ -474,17 +471,43 @@ impl SSTReader {
 impl Clone for SSTReader {
     fn clone(&self) -> Self {
         // cheap clone: reuse the same mmap and indexes via Arc
-        Self {
+        match Self::try_clone(self) {
+            Ok(reader) => reader,
+            Err(e) => {
+                // if cloning fails, log the error and try to open the file again
+                eprintln!("Failed to clone SSTReader: {}. Attempting to reopen file.", e);
+                // fallback: try to open the file again
+                match Self::open(&self.path) {
+                    Ok(reader) => reader,
+                    Err(e) => {
+                        // if even fallback fails, this is a critical error
+                        // the database is likely in an inconsistent state
+                        eprintln!(
+                            "CRITICAL: Failed to clone SSTReader at {:?} and fallback also failed: {}",
+                            self.path, e
+                        );
+                        eprintln!("This indicates a serious filesystem or memory issue.");
+                        // panic on the moment as we can't move ahead
+                        panic!("Failed to clone SSTReader and fallback also failed: {}", e)
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl SSTReader {
+    fn try_clone(&self) -> Result<Self> {
+        let file = File::open(&self.path)?;
+        let mmap = unsafe { Mmap::map(&file)? };
+        
+        Ok(Self {
             path: self.path.clone(),
-            mmap: unsafe {
-                // SAFETY: original file is still open by OS, mmap is read-only
-                let file = File::open(&self.path).expect("Failed to reopen SST file");
-                Mmap::map(&file).expect("Failed to mmap SST file")
-            },
+            mmap,
             block_indexes: Arc::clone(&self.block_indexes),
             bloom_filter: Arc::clone(&self.bloom_filter),
             min_sequence: self.min_sequence,
             max_sequence: self.max_sequence,
-        }
+        })
     }
 }

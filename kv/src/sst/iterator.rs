@@ -41,14 +41,13 @@ impl SSTIterator {
         let offset = self.reader.block_indexes[self.block_idx].offset;
         let mut pos = offset as usize;
 
-        let block_len =
-            u32::from_le_bytes(self.reader.mmap[pos..pos + 4].try_into().unwrap()) as usize;
+        let block_len = super::to_u32(&self.reader.mmap[pos..pos + 4])? as usize;
         pos += 4;
 
         self.current_block_data = self.reader.mmap[pos..pos + block_len].to_vec();
         pos += block_len;
 
-        let crc = u32::from_le_bytes(self.reader.mmap[pos..pos + 4].try_into().unwrap());
+        let crc = super::to_u32(&self.reader.mmap[pos..pos + 4])?;
         let mut hasher = Hasher::new();
         hasher.update(&self.current_block_data);
         if hasher.finalize() != crc {
@@ -63,7 +62,7 @@ impl SSTIterator {
 }
 
 impl Iterator for SSTIterator {
-    type Item = Result<(Vec<u8>, Vec<u8>, u64)>; // now returns (key, value, seq)
+    type Item = Result<(Vec<u8>, Vec<u8>, u64)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -83,8 +82,15 @@ impl Iterator for SSTIterator {
                 continue;
             }
 
-            let key_len = u16::from_le_bytes(data[idx..idx + 2].try_into().unwrap()) as usize;
-            let val_len = u32::from_le_bytes(data[idx + 2..idx + 6].try_into().unwrap()) as usize;
+            let key_len = match super::to_u16(&data[idx..idx + 2]) {
+                Ok(len) => len as usize,
+                Err(e) => return Some(Err(e)),
+            };
+
+            let val_len = match super::to_u32(&data[idx + 2..idx + 6]) {
+                Ok(len) => len as usize,
+                Err(e) => return Some(Err(e)),
+            };
 
             let key_start = idx + 6;
             let seq_start = key_start + key_len;
@@ -96,7 +102,12 @@ impl Iterator for SSTIterator {
             }
 
             let key = data[key_start..key_start + key_len].to_vec();
-            let seq = u64::from_le_bytes(data[seq_start..seq_start + 8].try_into().unwrap());
+
+            let seq = match super::to_u64(&data[seq_start..seq_start + 8]) {
+                Ok(s) => s,
+                Err(e) => return Some(Err(e)),
+            };
+
             let value = data[val_start..val_start + val_len].to_vec();
 
             self.current_block_pos = val_start + val_len;

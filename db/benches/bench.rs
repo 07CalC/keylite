@@ -307,5 +307,5 @@ fn main() {
     );
 
     drop(db);
-    std::fs::remove_dir_all("benchdb").ok();
+    // std::fs::remove_dir_all("benchdb").ok();
 }

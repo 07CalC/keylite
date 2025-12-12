@@ -104,13 +104,13 @@ impl BloomFilter {
 pub fn read_bloom_filter(mmap: &Mmap, offset: u64) -> Result<BloomFilter> {
     let mut pos = offset as usize;
 
-    let bloom_len = u32::from_le_bytes(mmap[pos..pos + 4].try_into().unwrap()) as usize;
+    let bloom_len = super::to_u32(&mmap[pos..pos + 4])? as usize;
     pos += 4;
 
     let bloom_data = &mmap[pos..pos + bloom_len];
     pos += bloom_len;
 
-    let crc = u32::from_le_bytes(mmap[pos..pos + 4].try_into().unwrap());
+    let crc = super::to_u32(&mmap[pos..pos + 4])?;
     let mut hasher = Hasher::new();
     hasher.update(bloom_data);
     if hasher.finalize() != crc {
