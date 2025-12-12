@@ -1,5 +1,7 @@
 # keylite
 
+[![TESTS](https://github.com/07CalC/keylite/actions/workflows/ci.yml/badge.svg)](https://github.com/07CalC/keylite/actions/workflows/ci.yml)
+
 A lightweight, embedded key-value (document db wip) database written in Rust with support for multiple programming languages.
 
 ## Architecture
