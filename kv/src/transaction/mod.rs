@@ -1,6 +1,9 @@
 use crossbeam_skiplist::SkipMap;
 
-use crate::{core::Db, error::Result};
+use crate::{
+    core::{Db, DbIterator},
+    error::Result,
+};
 
 pub enum TxnOp {
     Put { key: Vec<u8>, val: Vec<u8> },
@@ -34,6 +37,7 @@ impl<'a> Transaction<'a> {
         }
         self.db.get_seq(key, self.seq)
     }
+
     pub fn del(&mut self, key: &[u8]) {
         self.buf.insert(key.to_vec(), vec![]);
     }
@@ -53,5 +57,103 @@ impl<'a> Transaction<'a> {
 
     pub fn abort(&mut self) {
         self.buf.clear();
+    }
+
+    pub fn scan(&self, start: Option<&[u8]>, end: Option<&[u8]>) -> TransactionIterator {
+        // Get underlying DB iterator
+        let db_iter = self.db.scan(start, end);
+
+        // Collect transaction buffer entries within the range
+        let mut txn_entries = Vec::new();
+        for entry in self.buf.iter() {
+            let key = entry.key();
+
+            // Check if key is within range
+            if let Some(s) = start {
+                if key.as_slice() < s {
+                    continue;
+                }
+            }
+            if let Some(e) = end {
+                if key.as_slice() >= e {
+                    continue;
+                }
+            }
+
+            txn_entries.push((key.clone(), entry.value().clone()));
+        }
+
+        TransactionIterator {
+            db_iter,
+            txn_entries,
+            txn_pos: 0,
+            last_key: None,
+        }
+    }
+}
+
+pub struct TransactionIterator {
+    db_iter: DbIterator,
+    txn_entries: Vec<(Vec<u8>, Vec<u8>)>,
+    txn_pos: usize,
+    last_key: Option<Vec<u8>>,
+}
+
+impl Iterator for TransactionIterator {
+    type Item = (Vec<u8>, Vec<u8>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            // Peek at both sources
+            let txn_entry = if self.txn_pos < self.txn_entries.len() {
+                Some(&self.txn_entries[self.txn_pos])
+            } else {
+                None
+            };
+
+            let db_entry = self.db_iter.next();
+
+            // Determine which entry to return
+            let (key, val) = match (txn_entry, db_entry) {
+                (Some((tk, tv)), Some((dk, dv))) => {
+                    // Both have entries, pick the smaller key
+                    // Transaction entries take precedence on equal keys
+                    if tk <= &dk {
+                        self.txn_pos += 1;
+                        (tk.clone(), tv.clone())
+                    } else {
+                        (dk, dv)
+                    }
+                }
+                (Some((tk, tv)), None) => {
+                    // Only transaction has entry
+                    self.txn_pos += 1;
+                    (tk.clone(), tv.clone())
+                }
+                (None, Some((dk, dv))) => {
+                    // Only DB has entry
+                    (dk, dv)
+                }
+                (None, None) => {
+                    // Both exhausted
+                    return None;
+                }
+            };
+
+            // Skip duplicates
+            if let Some(ref last) = self.last_key {
+                if &key == last {
+                    continue;
+                }
+            }
+            self.last_key = Some(key.clone());
+
+            // Skip tombstones (empty values)
+            if val.is_empty() {
+                continue;
+            }
+
+            return Some((key, val));
+        }
     }
 }

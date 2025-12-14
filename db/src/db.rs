@@ -1,15 +1,16 @@
 use std::path::Path;
 
-use keylite_kv::core::Db;
+use keylite_kv::{core::Db, transaction::Transaction};
 use serde_json::Value;
 
 use crate::{
     collection::{CollectionMeta, Index, collection_meta_key, doc_key},
     error::{DocError, Result},
     index::{non_unique_index, prefix_range, unique_index},
+    transaction::Txn,
 };
 
-fn value_to_string(value: &Value) -> String {
+pub fn value_to_string(value: &Value) -> String {
     match value {
         Value::String(v) => v.to_string(),
         _ => value.to_string(),
@@ -265,5 +266,10 @@ impl KeyLite {
             }
         }
         Ok(result)
+    }
+
+    pub fn begin(&self) -> Txn {
+        let transaction = self.kv.begin();
+        Txn::new(&self, transaction)
     }
 }

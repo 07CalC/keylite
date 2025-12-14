@@ -73,30 +73,34 @@ fn main() {
         json!({"name": "Wyatt", "email": "wyatt@example.com", "age": 31}),
         json!({"name": "Zara", "email": "zara@example.com", "age": 22}),
     ];
-
-    // let t2 = Instant::now();
-    // for user in users {
-    //     db.insert("users", user).unwrap();
-    // }
-    // println!("Inserted 50 users in {:?}\n", t2.elapsed());
-    //
-    // let t3 = Instant::now();
-    // let result = db.get_by_field_forced("users", "email", &"violet@emample.com".into());
-    // if result.is_ok() {
-    //     println!("{:?}", result.unwrap());
-    // }
-    // println!("got in {:?} via force", t3.elapsed());
-    //
-    // let t4 = Instant::now();
-    // let result2 = db.get_by_index("users", "email", &"violet@example.com".into());
-    // if result2.is_ok() {
-    //     println!("{:?}", result2);
-    // }
-    // println!("got in {:?} via index", t4.elapsed());
-    //
-    let indexes = db.list_index("users");
+    let mut txn = db.begin();
+    for user in users {
+        txn.insert("users", user);
+    }
 
     let t2 = Instant::now();
-    println!("{:?}", indexes.unwrap());
-    println!("time taken: {:?}", t2.elapsed());
+    let usertxn = txn.get_by_index("users", "email", &"rachel@example.com".into());
+
+    println!("{:?}\n time: {:?}", usertxn.unwrap(), t2.elapsed());
+
+    let user = db.get_by_index("users", "email", &"rachel@example.com".into());
+    println!("{:?}", user.unwrap());
+
+    let t3 = Instant::now();
+    let user4 = txn.get_by_field_forced("users", "name", &"violet".into());
+    println!(
+        " {:?}\ntime taken to force : {:?}",
+        user4.unwrap(),
+        t3.elapsed()
+    );
+
+    txn.commit();
+
+    let t4 = Instant::now();
+    let user3 = db.get_by_field_forced("users", "name", &"violet".into());
+    println!(
+        "{:?}\n time taken to forse {:?}",
+        t4.elapsed(),
+        user3.unwrap()
+    );
 }
