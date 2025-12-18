@@ -1,4 +1,4 @@
-use keylite_kv::{error::DbError, transaction::Transaction};
+use keylite_kv::transaction::Transaction;
 use serde_json::Value;
 
 use crate::{

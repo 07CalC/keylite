@@ -1,12 +1,13 @@
 use std::path::Path;
 
-use keylite_kv::{core::Db, transaction::Transaction};
+use keylite_kv::core::Db;
 use serde_json::Value;
 
 use crate::{
     collection::{CollectionMeta, Index, collection_meta_key, doc_key},
     error::{DocError, Result},
     index::{non_unique_index, prefix_range, unique_index},
+    query::Query,
     transaction::Txn,
 };
 
@@ -268,8 +269,12 @@ impl KeyLite {
         Ok(result)
     }
 
-    pub fn begin(&self) -> Txn {
+    pub fn begin(&self) -> Txn<'_> {
         let transaction = self.kv.begin();
         Txn::new(&self, transaction)
+    }
+
+    pub fn query(&self, collection: &str) -> Query<'_> {
+        Query::new(&self, collection)
     }
 }
