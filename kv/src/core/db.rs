@@ -367,6 +367,17 @@ impl Db {
 
         DbIterator::new(memtable, immutables, sstables, start_bound, end_bound)
     }
+
+    pub fn scan_seq(&self, start: Option<&[u8]>, end: Option<&[u8]>, seq: u64) -> DbIterator {
+        let memtable = Arc::clone(&self.memtable.load());
+        let immutables = (**self.immutable_memtables.load()).clone();
+        let sstables = (**self.sstables.load()).clone();
+
+        let start_bound = start.map(|s| s.to_vec());
+        let end_bound = end.map(|e| e.to_vec());
+
+        DbIterator::new_with_seq(memtable, immutables, sstables, start_bound, end_bound, Some(seq))
+    }
 }
 
 // custom memory drop implementation to join all the threads (i.e. the compaction and flush queue

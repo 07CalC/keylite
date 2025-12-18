@@ -60,8 +60,8 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn scan(&self, start: Option<&[u8]>, end: Option<&[u8]>) -> TransactionIterator {
-        // Get underlying DB iterator
-        let db_iter = self.db.scan(start, end);
+        // Get underlying DB iterator with snapshot isolation at transaction's sequence
+        let db_iter = self.db.scan_seq(start, end, self.seq);
 
         // Collect transaction buffer entries within the range
         let mut txn_entries = Vec::new();
@@ -88,6 +88,7 @@ impl<'a> Transaction<'a> {
             txn_entries,
             txn_pos: 0,
             last_key: None,
+            peeked_db_entry: None,
         }
     }
 }
@@ -97,6 +98,7 @@ pub struct TransactionIterator {
     txn_entries: Vec<(Vec<u8>, Vec<u8>)>,
     txn_pos: usize,
     last_key: Option<Vec<u8>>,
+    peeked_db_entry: Option<(Vec<u8>, Vec<u8>)>, // Store peeked DB entry
 }
 
 impl Iterator for TransactionIterator {
@@ -104,43 +106,48 @@ impl Iterator for TransactionIterator {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            // Peek at both sources
+            // peek at both sources first
             let txn_entry = if self.txn_pos < self.txn_entries.len() {
                 Some(&self.txn_entries[self.txn_pos])
             } else {
                 None
             };
 
-            let db_entry = self.db_iter.next();
+            // get or peek DB entry
+            if self.peeked_db_entry.is_none() {
+                self.peeked_db_entry = self.db_iter.next();
+            }
 
-            // Determine which entry to return
-            let (key, val) = match (txn_entry, db_entry) {
-                (Some((tk, tv)), Some((dk, dv))) => {
+            // determine which entry to be returned
+            let (key, val) = match (txn_entry, &self.peeked_db_entry) {
+                (Some((tk, tv)), Some((dk, _))) => {
                     // Both have entries, pick the smaller key
                     // Transaction entries take precedence on equal keys
-                    if tk <= &dk {
+                    if tk <= dk {
                         self.txn_pos += 1;
                         (tk.clone(), tv.clone())
                     } else {
-                        (dk, dv)
+                        let entry = self.peeked_db_entry.take().unwrap();
+                        entry
                     }
                 }
                 (Some((tk, tv)), None) => {
-                    // Only transaction has entry
+                    // only transaction has entry
                     self.txn_pos += 1;
                     (tk.clone(), tv.clone())
                 }
-                (None, Some((dk, dv))) => {
-                    // Only DB has entry
-                    (dk, dv)
+                (None, Some(_)) => {
+                    // only DB has entry
+                    let entry = self.peeked_db_entry.take().unwrap();
+                    entry
                 }
                 (None, None) => {
-                    // Both exhausted
+                    // none has a entry
                     return None;
                 }
             };
 
-            // Skip duplicates
+            // skip duplicates
             if let Some(ref last) = self.last_key {
                 if &key == last {
                     continue;
@@ -148,7 +155,7 @@ impl Iterator for TransactionIterator {
             }
             self.last_key = Some(key.clone());
 
-            // Skip tombstones (empty values)
+            // skip tombstones, i.e. empty values or deleted values
             if val.is_empty() {
                 continue;
             }

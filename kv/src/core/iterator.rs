@@ -76,6 +76,8 @@ pub struct DbIterator {
     last_key: Option<Vec<u8>>,
     start_bound: Option<Vec<u8>>,
     end_bound: Option<Vec<u8>>,
+    max_seq: Option<u64>, // for snapshot isolation, we should only see the values with seq less
+                          // than this
 }
 
 impl DbIterator {
@@ -85,6 +87,24 @@ impl DbIterator {
         sstables: Vec<SSTReader>,
         start_bound: Option<Vec<u8>>,
         end_bound: Option<Vec<u8>>,
+    ) -> Self {
+        Self::new_with_seq(
+            memtable,
+            immutable_memtable,
+            sstables,
+            start_bound,
+            end_bound,
+            None,
+        )
+    }
+
+    pub fn new_with_seq(
+        memtable: Arc<Memtable>,
+        immutable_memtable: Vec<Arc<Memtable>>,
+        sstables: Vec<SSTReader>,
+        start_bound: Option<Vec<u8>>,
+        end_bound: Option<Vec<u8>>,
+        max_seq: Option<u64>,
     ) -> Self {
         let mut sources = Vec::new();
         let mut heap = BinaryHeap::new();
@@ -131,7 +151,9 @@ impl DbIterator {
 
         // preload one entry from each source
         for i in 0..sources.len() {
-            if let Some(entry) = Self::advance_source(&mut sources, i, &start_bound, &end_bound) {
+            if let Some(entry) =
+                Self::advance_source(&mut sources, i, &start_bound, &end_bound, &max_seq)
+            {
                 heap.push(entry);
             }
         }
@@ -142,6 +164,7 @@ impl DbIterator {
             last_key: None,
             start_bound,
             end_bound,
+            max_seq,
         }
     }
 
@@ -150,6 +173,7 @@ impl DbIterator {
         source_idx: usize,
         start_bound: &Option<Vec<u8>>,
         end_bound: &Option<Vec<u8>>,
+        max_seq: &Option<u64>,
     ) -> Option<IterEntry> {
         loop {
             let (key, value, seq, priority) = match &mut sources[source_idx] {
@@ -171,6 +195,14 @@ impl DbIterator {
                     Err(_) => return None,
                 },
             };
+
+            // kkip entries with sequence numbers >= max_seq, for snapshot isolation
+            // we use >= to match the strict inequality in get_seq (seq < snapshot_seq)
+            if let Some(max) = max_seq {
+                if seq >= *max {
+                    continue;
+                }
+            }
 
             if let Some(start) = start_bound {
                 if &key < start {
@@ -215,6 +247,7 @@ impl Iterator for DbIterator {
                         idx,
                         &self.start_bound,
                         &self.end_bound,
+                        &self.max_seq,
                     ) {
                         self.heap.push(next_entry);
                     }
